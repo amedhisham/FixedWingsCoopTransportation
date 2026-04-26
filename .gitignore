@@ -1,0 +1,6 @@
+# Python environments
+codes/.venv/
+
+# Python cache
+__pycache__/
+
