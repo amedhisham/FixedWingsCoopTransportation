@@ -66,7 +66,7 @@ fmu.exitInitializationMode()
 # ---------------------------------------------------------
 time = 0.0
 step_size = 0.01  # 100 Hz control loop
-end_time = 10.0
+end_time = 20.0
 
 time_history = []
 z_position_history = []
@@ -132,6 +132,10 @@ while time < end_time:
     curr_linVel = np.array(fmu.getReal([vrs['Load_LinVelocity[1]'], 
                        vrs['Load_LinVelocity[2]'], 
                        vrs['Load_LinVelocity[3]']]))
+    
+    drone1_pos = np.array(fmu.getReal([vrs['Drones_LinVelocity[1]'], 
+                       vrs['Drones_LinVelocity[2]'], 
+                       vrs['Drones_LinVelocity[3]']]))
 
 
     curr_orientation_matrix = fmu.getReal([vrs['Load_Orientation[1,1]'], 
@@ -154,7 +158,7 @@ while time < end_time:
 
     # Store the data
     time_history.append(time)
-    current_pos_z = curr_pos[2]
+    current_pos_z = drone1_pos[0]
     # print(currentPos_z)
     z_position_history.append(current_pos_z)
 
@@ -170,14 +174,16 @@ while time < end_time:
     desired_forces = cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d,lambda_star,n_carriers)
     desired_forces = desired_forces.tolist()
     desired_force_derivatives = f_dot.tolist()
-    # desired_forces = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
-
+    # Fz = 0.7 * 9.81/4
+    # desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
+    # desired_force_derivatives = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     # D. INJECT INPUTS: Send the 12x1 flat force vector into Inports
     fmu.setReal(force_vrs, desired_forces)
     fmu.setReal(deriv_vrs, desired_force_derivatives)
 
     # E. STEP SIMULATION: Tell the C++ solver to calculate the next 0.01 seconds
+    # print(time)
     fmu.doStep(currentCommunicationPoint=time, communicationStepSize=step_size)
 
     # F. ADVANCE CLOCK
@@ -192,6 +198,9 @@ fmu.freeInstance()
 # ---------------------------------------------------------
 # PHASE 6: Plotting the Results
 # ---------------------------------------------------------
+z_position_history = [abs(x) for x in z_position_history]
+
+print(min(z_position_history))
 plt.figure(figsize=(10, 5))
 plt.step(time_history, z_position_history, label="FMU Payload Z", color='blue', where='post')
 plt.title("Payload Z-Position over Time")

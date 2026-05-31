@@ -5,18 +5,20 @@ def get_reference_trajectory(t):
     Calculates a straight-line trajectory in the X-direction.
     """
     v_x = 0.5      # Constant velocity in X (m/s)
-    z_hover = 1.5  # Constant flight altitude (m)
+    z_hover = 1.0  # Constant flight altitude (m)
     
     # 1. Desired Position
     p_Ld = np.array([
-        v_x * t,  # Moving forward in X
+        # v_x * t,  # Moving forward in X
+        0.0,
         0.0,      # Y is constant
         z_hover   # Z is constant
     ])
     
     # 2. Desired Linear Velocity
     v_Ld = np.array([
-        v_x,
+        # v_x,
+        0.0,
         0.0,
         0.0
     ])
@@ -50,7 +52,7 @@ def error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,t
 
     ev = curr_linVel - ref_linVel
 
-    ew = curr_angVel - ref_angVel 
+    ew = ref_angVel - curr_angVel
 
     return ep , eR , ev , ew
 
