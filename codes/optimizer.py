@@ -12,7 +12,38 @@ def skew(v):
         [-v[1], v[0], 0.0]
     ])
 
-def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vectors):
+def compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vectors, n_carriers):
+    
+    # Step 1: Edge vectors for Hamiltonian cycle k -> k+1 -> ... -> 0
+    edge_vectors = []
+    for k in range(n_carriers):
+        i = k
+        j = (k + 1) % n_carriers  # wraps around: last point connects back to 0
+        # b_ij = curr_orientation_matrix @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
+        b_ij = np.eye(3)  @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
+
+        edge_vectors.append(b_ij)
+    
+    # Step 2: Incidence matrix H (n x n)
+    # +1 at tail node, -1 at head node for each edge
+    H = np.zeros((n_carriers, n_carriers))
+    for k in range(n_carriers):
+        i = k                        # tail: +1
+        j = (k + 1) % n_carriers    # head: -1
+        H[i, k] =  1
+        H[j, k] = -1
+    
+    # Step 3: Block diagonal matrix of edge vectors (3n x n)
+    D = np.zeros((3 * n_carriers, n_carriers))
+    for k in range(n_carriers):
+        D[3*k:3*(k+1), k] = edge_vectors[k]
+    
+    # Step 4: N = (H ⊗ I3) @ D  →  (3n x 3n) @ (3n x n) = (3n x n)
+    N = np.kron(H, np.eye(3)) @ D
+    
+    return N
+
+def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vectors,n_carriers):
     """
     Computes the Grasp Matrix (G), its pseudo-inverse, and Nullspace (N).
     
@@ -26,7 +57,6 @@ def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vect
         G_pinv: 3n x 6 Right Pseudo-inverse of G
         N: 3n x (3n-6) Nullspace Basis Matrix
     """
-    n_carriers = len(Attachment_Point_Vectors)
     
     # Initialize the top and bottom halves of the Grasp matrix
     G_top = np.zeros((3, 3 * n_carriers))
@@ -40,7 +70,8 @@ def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vect
         # Equation 8: S(^B b_i) * R_L(t)^T
         Bb_i = Attachment_Point_Vectors[i,:]
         skew_Bb_i = skew(Bb_i)
-        G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @ curr_orientation_matrix.T
+        # G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @ curr_orientation_matrix.T
+        G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @  np.eye(3).T
         
     # Combine top and bottom blocks into the final 6 x 3n matrix
     G = np.vstack((G_top, G_bottom))
@@ -50,17 +81,21 @@ def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vect
     
     # Calculate the nullspace basis matrix N
     # Since rank(G) = 6, N will have dimensions 3n x (3n-6)
-    N = null_space(G)
+    N = compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vectors, n_carriers)
+
     
     return G, G_pinv, N
 
 def cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d,lambda_star,n_carriers):
 
-   _ , Grasp_pinv_Matrix , Nullspace_Matrix = calculate_grasp_and_nullspace(curr_orientation_matrix,Attachment_Point_Vectors)
+   _ , Grasp_pinv_Matrix , Nullspace_Matrix = calculate_grasp_and_nullspace(curr_orientation_matrix,Attachment_Point_Vectors,n_carriers)
 
-   desired_forces = Grasp_pinv_Matrix @ w_d + Nullspace_Matrix[:, :n_carriers] @ lambda_star
+   desired_forces = Grasp_pinv_Matrix @ w_d + Nullspace_Matrix @ lambda_star
+     
+#    desired_forces = Grasp_pinv_Matrix @ w_d 
 
-   return desired_forces
+
+   return desired_forces , Grasp_pinv_Matrix
 
 def init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases):
 
@@ -135,12 +170,12 @@ def init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases):
     return casadi_solver
 
 
-def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases):
+def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases,bypass):
 
 
     if not hasattr(optimizer, "prev_x"):
         # Histories for Optimization
-        optimizer.prev_x = np.array([1.0, 1.0]) 
+        optimizer.prev_x = np.array([2.0, 1.2]) 
         optimizer.prev_lam = np.zeros(n_carriers)
         optimizer.prev_lam_dot = np.zeros(n_carriers)
 
@@ -150,9 +185,9 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
         optimizer.prev_N = np.zeros((12, n_carriers)) #first n columns 
 
 
-    _ , Grasp_pinv_Matrix , Nullspace_Matrix = calculate_grasp_and_nullspace(curr_orientation_matrix,Attachment_Point_Vectors)
+    _ , Grasp_pinv_Matrix , Nullspace_Matrix = calculate_grasp_and_nullspace(curr_orientation_matrix,Attachment_Point_Vectors,n_carriers)
 
-    N = Nullspace_Matrix[:, :n_carriers]
+    N = Nullspace_Matrix
     
     # 1. Finite Differences for Derivatives
     G_pinv_dot = (Grasp_pinv_Matrix - optimizer.prev_G_pinv) / step_size
@@ -181,10 +216,16 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     lbg = [epsilon**2] * n_carriers
 
     # 4. SOLVE
-    res = casadi_solver(x0=optimizer.prev_x, p=p_val, lbg=lbg, ubg=[np.inf]*n_carriers)
-    
-    opt_x = np.array(res['x']).flatten()
-    opt_xi, opt_A = opt_x[0], opt_x[1]
+    if bypass:
+        opt_xi = 2.0
+        opt_A = 1.2
+        opt_x = np.array([opt_xi, opt_A])
+
+    else:
+        res = casadi_solver(x0=optimizer.prev_x, p=p_val, lbg=lbg, ubg=[np.inf]*n_carriers)
+        
+        opt_x = np.array(res['x']).flatten()
+        opt_xi, opt_A = opt_x[0], opt_x[1]
     
 
     # 5. Extract our 4 Lambda Stars and their analytical derivatives

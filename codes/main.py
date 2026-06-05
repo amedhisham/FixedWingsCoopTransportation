@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 from fmpy.fmi2 import FMU2Slave
 from controller import  error_calculation , wrench_controller
 from optimizer import cable_force_calculation , init_optimizer , optimizer
+import time as time_module
+from scipy.io import savemat
 
 fmu_filename = 'Base_Model.fmu'
 
@@ -44,7 +46,7 @@ n_carriers = 4
 epsilon = 0.2         # Minimum velocity threshold
 w_pos, w_vel = 1.0, 1.0 # Cost weights 
 phases = np.array([0, np.pi/2, 0, np.pi/2])
-
+bypass = 1 #bypass solver for debugging 
 
 # 1. Your matrix and flattening (same as before)
 J_L_matrix = np.array([[0.01, 0, 0], [0, 0.01, 0], [0, 0, 0.01]]) 
@@ -66,10 +68,23 @@ fmu.exitInitializationMode()
 # ---------------------------------------------------------
 time = 0.0
 step_size = 0.01  # 100 Hz control loop
-end_time = 20.0
+end_time = 10.0
 
 time_history = []
 z_position_history = []
+
+drone1_VelNorm_history = []
+drone2_VelNorm_history = []
+drone3_VelNorm_history = []
+drone4_VelNorm_history = []
+
+force_history = []
+force_derv_history = []
+
+Fz = 0.7 * 9.81/4
+# Fz = 0
+desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
+
 
 # 1. PRE-COMPUTE THE MEMORY ADDRESSES 
 # Create the 12 string names: 'Desired_Cable_Forces[1,1]' to '[1,12]'
@@ -106,7 +121,7 @@ Attachment_Point_Vectors = fmu.getReal([vrs['Attachment_Point_Vectors[1,1]'],
                        vrs['Attachment_Point_Vectors[1,11]'],
                        vrs['Attachment_Point_Vectors[1,12]']])
 
-Attachment_Point_Vectors = np.array(Attachment_Point_Vectors).reshape((n_carriers, 3), order='F')
+Attachment_Point_Vectors = np.array(Attachment_Point_Vectors).reshape((n_carriers, 3))
 
 
     
@@ -118,6 +133,7 @@ Cable_Resting_Length = fmu.getReal([vrs['Cable_Resting_Length']])[0]
 casadi_solver = init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases)
 
 
+start = time_module.time()
 
 
 while time < end_time:
@@ -133,10 +149,37 @@ while time < end_time:
                        vrs['Load_LinVelocity[2]'], 
                        vrs['Load_LinVelocity[3]']]))
     
-    drone1_pos = np.array(fmu.getReal([vrs['Drones_LinVelocity[1]'], 
+    drone1_pos = np.array(fmu.getReal([vrs['Drone_Positions[1]'], 
+                       vrs['Drone_Positions[2]'], 
+                       vrs['Drone_Positions[3]']]))
+    
+    drone2_pos = np.array(fmu.getReal([vrs['Drone_Positions[4]'], 
+                       vrs['Drone_Positions[5]'], 
+                       vrs['Drone_Positions[6]']]))
+    
+    drone3_pos = np.array(fmu.getReal([vrs['Drone_Positions[7]'], 
+                       vrs['Drone_Positions[8]'], 
+                       vrs['Drone_Positions[9]']]))
+    
+    drone4_pos = np.array(fmu.getReal([vrs['Drone_Positions[10]'], 
+                       vrs['Drone_Positions[11]'], 
+                       vrs['Drone_Positions[12]']]))
+    
+    drone1_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[1]'], 
                        vrs['Drones_LinVelocity[2]'], 
                        vrs['Drones_LinVelocity[3]']]))
-
+    
+    drone2_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[4]'], 
+                       vrs['Drones_LinVelocity[5]'], 
+                       vrs['Drones_LinVelocity[6]']]))
+    
+    drone3_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[7]'], 
+                       vrs['Drones_LinVelocity[8]'], 
+                       vrs['Drones_LinVelocity[9]']]))
+    
+    drone4_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[10]'], 
+                       vrs['Drones_LinVelocity[11]'], 
+                       vrs['Drones_LinVelocity[12]']]))
 
     curr_orientation_matrix = fmu.getReal([vrs['Load_Orientation[1,1]'], 
                        vrs['Load_Orientation[1,2]'], 
@@ -158,25 +201,49 @@ while time < end_time:
 
     # Store the data
     time_history.append(time)
-    current_pos_z = drone1_pos[0]
+    current_pos_z = curr_pos[2]
     # print(currentPos_z)
     z_position_history.append(current_pos_z)
+
+    # drone1_VelNorm = np.linalg.norm(drone1_linVel)
+    # drone1_VelNorm_history.append(drone1_VelNorm)
+
+    # drone2_VelNorm = np.linalg.norm(drone2_linVel)
+    # drone2_VelNorm_history.append(drone2_VelNorm)
+
+    # drone3_VelNorm = np.linalg.norm(drone3_linVel)
+    # drone3_VelNorm_history.append(drone3_VelNorm)
+
+    # drone4_VelNorm = np.linalg.norm(drone4_linVel)
+    # drone4_VelNorm_history.append(drone4_VelNorm)
 
     # B. DESIRED WRENCH CALCULATION: Calculate error then pass it to wrench controller 
     ep , eR , ev , ew = error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time)
     
-    w_d = wrench_controller(ep,eR,ev,ew,curr_angVel,Load_Inertia_Matrix,Load_Mass,step_size)
+    w_d = wrench_controller(ep,eR,ev,ew,curr_angVel,Load_Inertia_Matrix,Load_Mass,Attachment_Point_Vectors,step_size,n_carriers,bypass,desired_forces)
+
+    # drone1_VelNorm = np.linalg.norm(lambda_star)
+    # drone1_VelNorm_history.append(drone1_VelNorm)
+
 
     # C. RUN OPTIMIZER: Pass states to fixed-wing optimizer
-    lambda_star, f_dot = optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases)
+    lambda_star, f_dot = optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases,bypass)
     
+    # drone1_VelNorm = np.linalg.norm(drone1_pos)
+    # drone1_VelNorm_history.append(w_d[2])
 
-    desired_forces = cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d,lambda_star,n_carriers)
+    desired_forces , Grasp_pinv_Matrix = cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d,lambda_star,n_carriers)
     desired_forces = desired_forces.tolist()
     desired_force_derivatives = f_dot.tolist()
     # Fz = 0.7 * 9.81/4
     # desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
     # desired_force_derivatives = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    drone1_VelNorm = np.linalg.norm(drone1_linVel)
+    drone1_VelNorm_history.append(drone1_VelNorm)
+
+    force_history.append(desired_forces)
+    force_derv_history.append(desired_force_derivatives)
 
     # D. INJECT INPUTS: Send the 12x1 flat force vector into Inports
     fmu.setReal(force_vrs, desired_forces)
@@ -192,13 +259,26 @@ while time < end_time:
 # ---------------------------------------------------------
 # PHASE 5: Teardown
 # ---------------------------------------------------------
+elapsed = time_module.time() - start
+
 fmu.terminate()
 fmu.freeInstance()
 
 # ---------------------------------------------------------
 # PHASE 6: Plotting the Results
 # ---------------------------------------------------------
-z_position_history = [abs(x) for x in z_position_history]
+
+data = {
+    "t": time_history,
+    "force": force_history,
+    "force_derv" : force_derv_history
+}
+
+savemat("timeseries.mat", data)
+
+print(f"Time : {elapsed:.5f} ")
+
+# z_position_history = [abs(x) for x in z_position_history]
 
 print(min(z_position_history))
 plt.figure(figsize=(10, 5))
@@ -208,4 +288,18 @@ plt.xlabel("Time (s)")
 plt.ylabel("Z Position (m)")
 plt.grid(True)
 plt.legend()
+plt.show()
+
+plt.plot(time_history, drone1_VelNorm_history, label='norm 1')
+# plt.plot(time_history, drone2_VelNorm_history, label='norm 2')
+# plt.plot(time_history, drone3_VelNorm_history, label='norm 3')
+# plt.plot(time_history, drone4_VelNorm_history, label='norm 4')
+
+plt.xlabel('Time')
+plt.ylabel('Norm value')
+plt.title('Norms over time')
+
+plt.legend()
+plt.grid(True)
+
 plt.show()

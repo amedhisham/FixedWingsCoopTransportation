@@ -7,3 +7,9 @@ TotalMass = LoadMass + 0.01 * 4;
 w_d = [0;0; TotalMass*g;0;0;0];
 
 Fz = LoadMass*g/4
+
+forces.time = t';
+forces.signals.values = force;
+
+force_deriv.time = t';
+force_deriv.signals.values = force_derv;
