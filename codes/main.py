@@ -9,7 +9,7 @@ from optimizer import cable_force_calculation , init_optimizer , optimizer
 import time as time_module
 from scipy.io import savemat
 
-fmu_filename = 'Base_Model.fmu'
+fmu_filename = 'Base_Model_three_drones.fmu'
 
 # ---------------------------------------------------------
 # PHASE 1: Parse the Dictionary
@@ -44,10 +44,10 @@ fmu.setupExperiment(startTime=0.0)
 fmu.enterInitializationMode()
 
 # Global parameters
-n_carriers = 4
-epsilon = 0.2         # Minimum velocity threshold
-w_pos, w_vel = 0.1, 0.1 # Cost weights 
-phases = np.array([0, np.pi/2, 0, np.pi/2])
+n_carriers = 3
+epsilon = 0.2        # Minimum velocity threshold
+w_pos, w_vel = 1e-6, 1e-6 # Cost weights 
+phases = np.array([0, np.pi/3, 2*np.pi/3])
 bypass_optimizer = 0 #bypass optimizer for debugging , static controller
 bypass_controller = 0 #bypass controller for debugging , static controller with feedback
 
@@ -71,7 +71,7 @@ fmu.exitInitializationMode()
 # ---------------------------------------------------------
 time = 0.0
 step_size = 0.01  # 100 Hz control loop
-end_time = 20.0
+end_time = 15.0
 
 time_history = []
 z_position_history = []
@@ -84,15 +84,15 @@ drone4_VelNorm_history = []
 force_history = []
 force_derv_history = []
 
-Fz = 0.7 * 9.81/4
+Fz = 0.7 * 9.81/3
 # Fz = 0
-desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
+desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
 
 
 # 1. PRE-COMPUTE THE MEMORY ADDRESSES 
 # Create the 12 string names: 'Desired_Cable_Forces[1,1]' to '[1,12]'
-force_keys = [f'Desired_Cable_Forces[{i}]' for i in range(1, 13)]
-deriv_keys = [f'Desired_Cable_Forces_Derivatives[{i}]' for i in range(1, 13)]
+force_keys = [f'Desired_Cable_Forces[{i}]' for i in range(1, n_carriers*3 + 1)]
+deriv_keys = [f'Desired_Cable_Forces_Derivatives[{i}]' for i in range(1, n_carriers*3 + 1)]
 
 # Look up the 12 memory addresses for both
 force_vrs = [vrs[key] for key in force_keys]
@@ -119,10 +119,7 @@ Attachment_Point_Vectors = fmu.getReal([vrs['Attachment_Point_Vectors[1,1]'],
                        vrs['Attachment_Point_Vectors[1,6]'],
                        vrs['Attachment_Point_Vectors[1,7]'],
                        vrs['Attachment_Point_Vectors[1,8]'],
-                       vrs['Attachment_Point_Vectors[1,9]'],
-                       vrs['Attachment_Point_Vectors[1,10]'],
-                       vrs['Attachment_Point_Vectors[1,11]'],
-                       vrs['Attachment_Point_Vectors[1,12]']])
+                       vrs['Attachment_Point_Vectors[1,9]']])
 
 Attachment_Point_Vectors = np.array(Attachment_Point_Vectors).reshape((n_carriers, 3))
 
@@ -164,9 +161,9 @@ while time < end_time:
                        vrs['Drone_Positions[8]'], 
                        vrs['Drone_Positions[9]']]))
     
-    drone4_pos = np.array(fmu.getReal([vrs['Drone_Positions[10]'], 
-                       vrs['Drone_Positions[11]'], 
-                       vrs['Drone_Positions[12]']]))
+    # drone4_pos = np.array(fmu.getReal([vrs['Drone_Positions[10]'], 
+    #                    vrs['Drone_Positions[11]'], 
+    #                    vrs['Drone_Positions[12]']]))
     
     drone1_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[1]'], 
                        vrs['Drones_LinVelocity[2]'], 
@@ -180,9 +177,9 @@ while time < end_time:
                        vrs['Drones_LinVelocity[8]'], 
                        vrs['Drones_LinVelocity[9]']]))
     
-    drone4_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[10]'], 
-                       vrs['Drones_LinVelocity[11]'], 
-                       vrs['Drones_LinVelocity[12]']]))
+    # drone4_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[10]'], 
+    #                    vrs['Drones_LinVelocity[11]'], 
+    #                    vrs['Drones_LinVelocity[12]']]))
 
     curr_orientation_matrix = fmu.getReal([vrs['Load_Orientation[1,1]'], 
                        vrs['Load_Orientation[1,2]'], 
@@ -194,7 +191,7 @@ while time < end_time:
                        vrs['Load_Orientation[3,2]'],
                        vrs['Load_Orientation[3,3]']])
     
-    curr_orientation_matrix = np.array(curr_orientation_matrix).reshape((3, 3), order='F')
+    curr_orientation_matrix = np.array(curr_orientation_matrix).reshape((3, 3), order='C')
    
     curr_orientation_matrix = np.round(curr_orientation_matrix, decimals=6)
 
@@ -206,18 +203,18 @@ while time < end_time:
 
     # Store the data
     time_history.append(time)
-    current_pos_z = curr_pos[0]
+    current_pos_z = curr_pos[1]
     # print(currentPos_z)
     z_position_history.append(current_pos_z)
 
-    # drone1_VelNorm = np.linalg.norm(drone1_linVel)
-    # drone1_VelNorm_history.append(drone1_VelNorm)
+    drone1_VelNorm = np.linalg.norm(drone1_linVel)
+    drone1_VelNorm_history.append(drone1_VelNorm)
 
-    # drone2_VelNorm = np.linalg.norm(drone2_linVel)
-    # drone2_VelNorm_history.append(drone2_VelNorm)
+    drone2_VelNorm = np.linalg.norm(drone2_linVel)
+    drone2_VelNorm_history.append(drone2_VelNorm)
 
-    # drone3_VelNorm = np.linalg.norm(drone3_linVel)
-    # drone3_VelNorm_history.append(drone3_VelNorm)
+    drone3_VelNorm = np.linalg.norm(drone3_linVel)
+    drone3_VelNorm_history.append(drone3_VelNorm)
 
     # drone4_VelNorm = np.linalg.norm(drone4_linVel)
     # drone4_VelNorm_history.append(drone4_VelNorm)
@@ -241,11 +238,11 @@ while time < end_time:
     desired_forces = desired_forces.tolist()
     desired_force_derivatives = f_dot.tolist()
     # Fz = 0.7 * 9.81/4
-    # desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
-    # desired_force_derivatives = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
+    # desired_force_derivatives = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-    drone1_VelNorm = np.linalg.norm(drone1_linVel)
-    drone1_VelNorm_history.append(drone1_VelNorm)
+    # drone1_VelNorm = np.linalg.norm(drone1_linVel)
+    # drone1_VelNorm_history.append(drone1_VelNorm)
 
     force_history.append(desired_forces)
     force_derv_history.append(desired_force_derivatives)
@@ -296,8 +293,8 @@ plt.legend()
 plt.show()
 
 plt.plot(time_history, drone1_VelNorm_history, label='norm 1')
-# plt.plot(time_history, drone2_VelNorm_history, label='norm 2')
-# plt.plot(time_history, drone3_VelNorm_history, label='norm 3')
+plt.plot(time_history, drone2_VelNorm_history, label='norm 2')
+plt.plot(time_history, drone3_VelNorm_history, label='norm 3')
 # plt.plot(time_history, drone4_VelNorm_history, label='norm 4')
 
 plt.xlabel('Time')

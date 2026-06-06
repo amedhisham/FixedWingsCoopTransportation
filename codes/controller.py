@@ -7,17 +7,19 @@ def get_reference_trajectory(t):
     Calculates a piecewise straight-line trajectory:
 
     """
-    v_move = 0.5   # Speed during the moving phase (m/s) - change this to whatever you want
+    v_move = 0.0   # Speed during the moving phase (m/s) - change this to whatever you want
     z_hover = 1.39  # Constant flight altitude (m)
     
     # Initialize variables
-    x = 0.0
+    x = 0.5
+    y = 0.0
     vx = 0.0
     
     # 0. Piecewise Logic
     if t <= 5.0:
         # Phase 1: Hold position at the start
         x = 0.0
+        y = 0.0
         vx = 0.0
         
     elif t <= 15.0:
@@ -35,7 +37,7 @@ def get_reference_trajectory(t):
     # 1. Desired Position
     p_Ld = np.array([
         x,        # Piecewise X position
-        0.0,      # Y is constant
+        y,      # Y is constant
         z_hover   # Z is constant
     ])
     
@@ -152,7 +154,7 @@ def wrench_controller(ep,eR,ev,ew,curr_angVel,Load_Inertia_Matrix,Load_Mass,Atta
         # Combine top and bottom blocks into the final 6 x 3n matrix
         G = np.vstack((G_top, G_bottom))
 
-        desired_forces = np.array(desired_forces).reshape(12, 1)
+        desired_forces = np.array(desired_forces).reshape(n_carriers * 3, 1)
 
         w_d = G @ desired_forces
         w_d = w_d.flatten()

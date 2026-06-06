@@ -13,23 +13,26 @@ def skew(v):
     ])
 
 def compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vectors, n_carriers):
-    
-    # Step 1: Edge vectors for Hamiltonian cycle k -> k+1 -> ... -> 0
+
+    # P15-optimal cycle for n=4: 0->2->3->1->0 (min vertex angle ~130° vs 100° for sequential)
+    # Sequential cycle is used for all other n
+    if n_carriers == 4:
+        cycle = [0, 2, 3, 1, 0]
+    else:
+        cycle = list(range(n_carriers)) + [0]
+
+    # Step 1: Edge vectors along the Hamiltonian cycle
     edge_vectors = []
     for k in range(n_carriers):
-        i = k
-        j = (k + 1) % n_carriers  # wraps around: last point connects back to 0
+        i, j = cycle[k], cycle[k + 1]
         b_ij = curr_orientation_matrix @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
-        # b_ij = np.eye(3)  @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i]) #static controller
-
         edge_vectors.append(b_ij)
-    
+
     # Step 2: Incidence matrix H (n x n)
     # +1 at tail node, -1 at head node for each edge
     H = np.zeros((n_carriers, n_carriers))
     for k in range(n_carriers):
-        i = k                        # tail: +1
-        j = (k + 1) % n_carriers    # head: -1
+        i, j = cycle[k], cycle[k + 1]
         H[i, k] =  1
         H[j, k] = -1
     
@@ -93,6 +96,9 @@ def cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d
 
    desired_forces = Grasp_pinv_Matrix @ w_d + Nullspace_Matrix @ lambda_star
      
+#    print(f"full f drone 1: {desired_forces[0:3]}")
+#    print(f"full f drone 2: {desired_forces[3:6]}")
+#    print(f"full f drone 3: {desired_forces[6:9]}")
 #    desired_forces = Grasp_pinv_Matrix @ w_d 
 
 
@@ -113,11 +119,11 @@ def init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases):
     prev_lam_dot_sym = ca.SX.sym('prev_lam_dot', n_lambda)
 
     w_d_sym = ca.SX.sym('w_d', 6)
-    G_pinv_sym = ca.SX.sym('G_pinv', 12, 6)
-    N_sym = ca.SX.sym('N', 12, n_lambda)         # Our 12x4 Nullspace slice
-    N_dot_sym = ca.SX.sym('N_dot', 12, n_lambda) # Derivative of Nullspace
-    e_sym = ca.SX.sym('e', 12)                   # External wrench derivatives
-    v_L_sym = ca.SX.sym('v_L', 12)               # Carrier base velocities
+    G_pinv_sym = ca.SX.sym('G_pinv', n_carriers * 3, 6)
+    N_sym = ca.SX.sym('N', n_carriers * 3, n_lambda)         # Our n_carriers * 3x4 Nullspace slice
+    N_dot_sym = ca.SX.sym('N_dot', n_carriers * 3, n_lambda) # Derivative of Nullspace
+    e_sym = ca.SX.sym('e', n_carriers * 3)                   # External wrench derivatives
+    v_L_sym = ca.SX.sym('v_L', n_carriers * 3)               # Carrier base velocities
 
     # --- 3. INTERNAL LAMBDA FUNCTIONS (Eq 23) ---
     lam = ca.SX.zeros(n_lambda)
@@ -204,8 +210,7 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     # Calculate base carrier velocities v_Li (Eq 22 base term)
     v_L_stack = []
     for i in range(n_carriers):
-        b_i_world = curr_orientation_matrix @ Attachment_Point_Vectors[i, :]
-        v_Li = curr_linVel + np.cross(curr_angVel, b_i_world)
+        v_Li = v_Li = curr_linVel + curr_orientation_matrix @ np.cross(curr_angVel, Attachment_Point_Vectors[i, :])
         v_L_stack.extend(v_Li)
     v_L_stack = np.array(v_L_stack)
     
@@ -226,12 +231,15 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
         opt_x = np.array([opt_xi, opt_A])
 
     else:
-        res = casadi_solver(x0=optimizer.prev_x, p=p_val, lbg=lbg, ubg=[np.inf]*n_carriers)
-        
-        opt_x = np.array(res['x']).flatten()
+        res = casadi_solver(x0=optimizer.prev_x, p=p_val,
+                            lbx=[0.1, 0.0], ubx=[np.inf, np.inf],
+                            lbg=lbg, ubg=[np.inf]*n_carriers)
+
+        if casadi_solver.stats()['return_status'] == 'Solve_Succeeded':
+            opt_x = np.array(res['x']).flatten()
+        else:
+            opt_x = optimizer.prev_x.copy()
         opt_xi, opt_A = opt_x[0], opt_x[1]
-        # print(f"Optimal Ksi: {opt_xi}")
-        # print(f"Optimal A: {opt_A}")
 
 
     # 5. Extract our 4 Lambda Stars and their analytical derivatives

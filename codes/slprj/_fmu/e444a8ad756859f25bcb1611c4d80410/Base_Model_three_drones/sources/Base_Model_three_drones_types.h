@@ -1,0 +1,8 @@
+#ifndef Base_Model_three_drones_types_h_
+#define Base_Model_three_drones_types_h_
+
+typedef struct P_Base_Model_three_drones_T_ P_Base_Model_three_drones_T;
+typedef struct tag_RTM_Base_Model_three_drones_T
+  RT_MODEL_Base_Model_three_drones_T;
+
+#endif

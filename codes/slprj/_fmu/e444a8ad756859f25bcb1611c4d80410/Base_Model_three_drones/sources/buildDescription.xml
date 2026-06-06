@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<fmiBuildDescription fmiVersion="3.0">
+  <BuildConfiguration description="Build configuration for desktop platforms" modelIdentifier="Base_Model_three_drones">
+    <SourceFileSet language="C99">
+      <SourceFile name="Base_Model_three_drones.c"/>
+      <SourceFile name="Base_Model_three_drones_data.c"/>
+      <SourceFile name="rt_nonfinite.c"/>
+      <SourceFile name="RTWCG_FMU_util.c"/>
+      <SourceFile name="Base_Model_three_drones_fmu.c"/>
+    </SourceFileSet>
+  </BuildConfiguration>
+</fmiBuildDescription>
