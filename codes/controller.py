@@ -1,32 +1,52 @@
 import numpy as np
 from optimizer import skew
-from scipy.linalg import null_space
 
 
 def get_reference_trajectory(t):
     """
-    Calculates a straight-line trajectory in the X-direction.
+    Calculates a piecewise straight-line trajectory:
+
     """
-    v_x = 0.5      # Constant velocity in X (m/s)
+    v_move = 0.5   # Speed during the moving phase (m/s) - change this to whatever you want
     z_hover = 1.39  # Constant flight altitude (m)
     
+    # Initialize variables
+    x = 0.0
+    vx = 0.0
+    
+    # 0. Piecewise Logic
+    if t <= 5.0:
+        # Phase 1: Hold position at the start
+        x = 0.0
+        vx = 0.0
+        
+    elif t <= 15.0:
+        # Phase 2: Move forward. 
+        # Note: We use (t - 5.0) so the position starts counting up from 0.0 exactly at t = 5.
+        x = v_move * (t - 5.0)
+        vx = v_move
+        
+    else:
+        # Phase 3: Stop and lock final position.
+        # The position is frozen at exactly where it ended at t = 15 (which is v_move * 10 seconds of travel)
+        x = v_move * 10.0 
+        vx = 0.0
+
     # 1. Desired Position
     p_Ld = np.array([
-        # v_x * t,  # Moving forward in X
-        0.0,
+        x,        # Piecewise X position
         0.0,      # Y is constant
         z_hover   # Z is constant
     ])
     
     # 2. Desired Linear Velocity
     v_Ld = np.array([
-        # v_x,
-        0.0,
+        vx,       # Piecewise X velocity
         0.0,
         0.0
     ])
     
-    # 3. Desired Orientation Matrix (Assuming no rotation, perfectly level)
+    # 3. Desired Orientation Matrix (Perfectly level, no rotation)
     R_Ld = np.eye(3) 
     
     # 4. Desired Angular Velocity (Zero rotation)
@@ -55,7 +75,7 @@ def error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,t
 
     ev = curr_linVel - ref_linVel
 
-    ew = ref_angVel - curr_angVel
+    ew = curr_angVel - curr_orientation_matrix.T @ ref_orientation_matrix @ ref_angVel
 
     return ep , eR , ev , ew
 

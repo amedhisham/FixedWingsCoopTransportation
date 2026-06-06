@@ -19,8 +19,8 @@ def compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vecto
     for k in range(n_carriers):
         i = k
         j = (k + 1) % n_carriers  # wraps around: last point connects back to 0
-        # b_ij = curr_orientation_matrix @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
-        b_ij = np.eye(3)  @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
+        b_ij = curr_orientation_matrix @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i])
+        # b_ij = np.eye(3)  @ (Attachment_Point_Vectors[j] - Attachment_Point_Vectors[i]) #static controller
 
         edge_vectors.append(b_ij)
     
@@ -70,19 +70,20 @@ def calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vect
         # Equation 8: S(^B b_i) * R_L(t)^T
         Bb_i = Attachment_Point_Vectors[i,:]
         skew_Bb_i = skew(Bb_i)
-        # G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @ curr_orientation_matrix.T
-        G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @  np.eye(3).T
+        G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @ curr_orientation_matrix.T
+        # G_bottom[:, i*3 : (i+1)*3] = skew_Bb_i @  np.eye(3).T #static controller 
         
     # Combine top and bottom blocks into the final 6 x 3n matrix
     G = np.vstack((G_top, G_bottom))
     
     # Calculate the right pseudo-inverse (G^dagger)
-    G_pinv = np.linalg.pinv(G)
-    
+    G_pinv = np.linalg.pinv(G, rcond=1e-6)
+
     # Calculate the nullspace basis matrix N
     # Since rank(G) = 6, N will have dimensions 3n x (3n-6)
     N = compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vectors, n_carriers)
 
+    # print("G @ N =", np.round(G @ N, 6))
     
     return G, G_pinv, N
 
@@ -175,14 +176,17 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
 
     if not hasattr(optimizer, "prev_x"):
         # Histories for Optimization
+        xi0, A0 = 2.0, 1.2
+        optimizer.prev_x = np.array([xi0, A0])
         optimizer.prev_x = np.array([2.0, 1.2]) 
-        optimizer.prev_lam = np.zeros(n_carriers)
-        optimizer.prev_lam_dot = np.zeros(n_carriers)
+        optimizer.prev_lam =  A0 * np.cos(xi0 * 0.0 + phases)
+        optimizer.prev_lam_dot = -A0 * xi0 * np.sin(xi0 * 0.0 + phases)
 
         # Histories for derivatives
         optimizer.prev_w_d = w_d
-        optimizer.prev_G_pinv = np.zeros((12, 6))
-        optimizer.prev_N = np.zeros((12, n_carriers)) #first n columns 
+        _, G_pinv_init, N_init = calculate_grasp_and_nullspace(curr_orientation_matrix, Attachment_Point_Vectors, n_carriers)
+        optimizer.prev_G_pinv = G_pinv_init
+        optimizer.prev_N = N_init
 
 
     _ , Grasp_pinv_Matrix , Nullspace_Matrix = calculate_grasp_and_nullspace(curr_orientation_matrix,Attachment_Point_Vectors,n_carriers)
@@ -196,7 +200,7 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     
     # 2. Pre-calculate the external derivative term 'e'
     e_total = (G_pinv_dot @ w_d) + (Grasp_pinv_Matrix @ w_d_dot)
-    
+    # print(e_total)
     # Calculate base carrier velocities v_Li (Eq 22 base term)
     v_L_stack = []
     for i in range(n_carriers):
@@ -226,7 +230,9 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
         
         opt_x = np.array(res['x']).flatten()
         opt_xi, opt_A = opt_x[0], opt_x[1]
-    
+        # print(f"Optimal Ksi: {opt_xi}")
+        # print(f"Optimal A: {opt_A}")
+
 
     # 5. Extract our 4 Lambda Stars and their analytical derivatives
     lambda_star = opt_A * np.cos(opt_xi * time + phases)

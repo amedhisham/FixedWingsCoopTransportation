@@ -2,6 +2,8 @@ import fmpy
 import numpy as np
 import matplotlib.pyplot as plt
 from fmpy.fmi2 import FMU2Slave
+from scipy.spatial.transform import Rotation as R
+
 from controller import  error_calculation , wrench_controller
 from optimizer import cable_force_calculation , init_optimizer , optimizer
 import time as time_module
@@ -44,9 +46,10 @@ fmu.enterInitializationMode()
 # Global parameters
 n_carriers = 4
 epsilon = 0.2         # Minimum velocity threshold
-w_pos, w_vel = 1.0, 1.0 # Cost weights 
+w_pos, w_vel = 0.1, 0.1 # Cost weights 
 phases = np.array([0, np.pi/2, 0, np.pi/2])
-bypass = 1 #bypass solver for debugging 
+bypass_optimizer = 0 #bypass optimizer for debugging , static controller
+bypass_controller = 0 #bypass controller for debugging , static controller with feedback
 
 # 1. Your matrix and flattening (same as before)
 J_L_matrix = np.array([[0.01, 0, 0], [0, 0.01, 0], [0, 0, 0.01]]) 
@@ -68,7 +71,7 @@ fmu.exitInitializationMode()
 # ---------------------------------------------------------
 time = 0.0
 step_size = 0.01  # 100 Hz control loop
-end_time = 10.0
+end_time = 20.0
 
 time_history = []
 z_position_history = []
@@ -192,8 +195,10 @@ while time < end_time:
                        vrs['Load_Orientation[3,3]']])
     
     curr_orientation_matrix = np.array(curr_orientation_matrix).reshape((3, 3), order='F')
+   
+    curr_orientation_matrix = np.round(curr_orientation_matrix, decimals=6)
 
-    
+
 
     curr_angVel = np.array(fmu.getReal([vrs['Load_AngVelocity[1,1]'], 
                        vrs['Load_AngVelocity[2,1]'], 
@@ -201,7 +206,7 @@ while time < end_time:
 
     # Store the data
     time_history.append(time)
-    current_pos_z = curr_pos[2]
+    current_pos_z = curr_pos[0]
     # print(currentPos_z)
     z_position_history.append(current_pos_z)
 
@@ -220,14 +225,14 @@ while time < end_time:
     # B. DESIRED WRENCH CALCULATION: Calculate error then pass it to wrench controller 
     ep , eR , ev , ew = error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time)
     
-    w_d = wrench_controller(ep,eR,ev,ew,curr_angVel,Load_Inertia_Matrix,Load_Mass,Attachment_Point_Vectors,step_size,n_carriers,bypass,desired_forces)
+    w_d = wrench_controller(ep,eR,ev,ew,curr_angVel,Load_Inertia_Matrix,Load_Mass,Attachment_Point_Vectors,step_size,n_carriers,bypass_controller,desired_forces)
 
     # drone1_VelNorm = np.linalg.norm(lambda_star)
     # drone1_VelNorm_history.append(drone1_VelNorm)
 
 
     # C. RUN OPTIMIZER: Pass states to fixed-wing optimizer
-    lambda_star, f_dot = optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases,bypass)
+    lambda_star, f_dot = optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases,bypass_optimizer)
     
     # drone1_VelNorm = np.linalg.norm(drone1_pos)
     # drone1_VelNorm_history.append(w_d[2])

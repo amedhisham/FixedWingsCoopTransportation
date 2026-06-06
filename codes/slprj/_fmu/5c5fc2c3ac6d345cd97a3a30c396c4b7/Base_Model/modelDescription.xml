@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<fmiModelDescription fmiVersion="2.0" generationDateAndTime="2026-06-05T12:03:34Z" generationTool="Simulink (R2025b)" guid="{82e44e54-73e9-fca9-7713-ba447fb2f9af}" modelName="Base_Model" numberOfEventIndicators="0" variableNamingConvention="structured" version="1.59">
+  <CoSimulation canBeInstantiatedOnlyOncePerProcess="true" canGetAndSetFMUstate="true" canHandleVariableCommunicationStepSize="false" canNotUseMemoryManagementFunctions="true" canSerializeFMUstate="true" modelIdentifier="Base_Model">
+    <SourceFiles>
+      <File name="Base_Model.c"/>
+      <File name="Base_Model_data.c"/>
+      <File name="RTWCG_FMU_util.c"/>
+      <File name="Base_Model_fmu.c"/>
+    </SourceFiles>
+  </CoSimulation>
+  <DefaultExperiment startTime="0" stepSize="0.01" stopTime="10"/>
+  <VendorAnnotations>
+    <Tool name="Simulink">
+      <Simulink>
+        <ImportCompatibility FMUProduct="standalone FMU" canSourceFileCodeGeneration="true" requireMATLABOnPath="no" requireRelease="all"/>
+        <SimulinkModelInterface>
+          <Inport blockPath="Base_Model/Desired_Cable_Forces" dataType="double" dimension="[12]" portName="Desired_Cable_Forces" portNumber="1" sampleTime="[0.01    0]" uniquePortName="Desired_Cable_Forces" unit=""/>
+          <Inport blockPath="Base_Model/Desired_Cable_Forces_Derivatives" dataType="double" dimension="[12]" portName="Desired_Cable_Forces_Derivatives" portNumber="2" sampleTime="[0.01    0]" uniquePortName="Desired_Cable_Forces_Derivatives" unit=""/>
+          <Outport blockPath="Base_Model/Load_Position" dataType="double" dimension="[3]" portName="Load_Position" portNumber="1" sampleTime="[0.01    0]" uniquePortName="Load_Position" unit=""/>
+          <Outport blockPath="Base_Model/Load_LinVelocity" dataType="double" dimension="[3]" portName="Load_LinVelocity" portNumber="2" sampleTime="[0.01    0]" uniquePortName="Load_LinVelocity" unit=""/>
+          <Outport blockPath="Base_Model/Load_Orientation" dataType="double" dimension="[3  3]" portName="Load_Orientation" portNumber="3" sampleTime="[0.01    0]" uniquePortName="Load_Orientation" unit=""/>
+          <Outport blockPath="Base_Model/Load_Orientation_Derivative" dataType="double" dimension="[3  3]" portName="Load_Orientation_Derivative" portNumber="4" sampleTime="[0.01    0]" uniquePortName="Load_Orientation_Derivative" unit=""/>
+          <Outport blockPath="Base_Model/Load_AngVelocity" dataType="double" dimension="[3  1]" portName="Load_AngVelocity" portNumber="5" sampleTime="[0.01    0]" uniquePortName="Load_AngVelocity" unit=""/>
+          <Outport blockPath="Base_Model/Drone_Positions" dataType="double" dimension="[12]" portName="Drone_Positions" portNumber="6" sampleTime="[0.01    0]" uniquePortName="Drone_Positions" unit=""/>
+          <Outport blockPath="Base_Model/Drones_LinVelocity" dataType="double" dimension="[12]" portName="Drones_LinVelocity" portNumber="7" sampleTime="[0.01    0]" uniquePortName="Drones_LinVelocity" unit=""/>
+        </SimulinkModelInterface>
+      </Simulink>
+    </Tool>
+  </VendorAnnotations>
+  <ModelVariables>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(1)" name="Desired_Cable_Forces[1]" valueReference="0" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 1-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(2)" name="Desired_Cable_Forces[2]" valueReference="1" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 2-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(3)" name="Desired_Cable_Forces[3]" valueReference="2" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 3-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(4)" name="Desired_Cable_Forces[4]" valueReference="3" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 4-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(5)" name="Desired_Cable_Forces[5]" valueReference="4" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 5-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(6)" name="Desired_Cable_Forces[6]" valueReference="5" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 6-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(7)" name="Desired_Cable_Forces[7]" valueReference="6" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 7-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(8)" name="Desired_Cable_Forces[8]" valueReference="7" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 8-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(9)" name="Desired_Cable_Forces[9]" valueReference="8" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 9-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(10)" name="Desired_Cable_Forces[10]" valueReference="9" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 10-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(11)" name="Desired_Cable_Forces[11]" valueReference="10" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 11-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces(12)" name="Desired_Cable_Forces[12]" valueReference="11" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 12-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(1)" name="Desired_Cable_Forces_Derivatives[1]" valueReference="12" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 13-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(2)" name="Desired_Cable_Forces_Derivatives[2]" valueReference="13" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 14-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(3)" name="Desired_Cable_Forces_Derivatives[3]" valueReference="14" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 15-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(4)" name="Desired_Cable_Forces_Derivatives[4]" valueReference="15" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 16-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(5)" name="Desired_Cable_Forces_Derivatives[5]" valueReference="16" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 17-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(6)" name="Desired_Cable_Forces_Derivatives[6]" valueReference="17" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 18-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(7)" name="Desired_Cable_Forces_Derivatives[7]" valueReference="18" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 19-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(8)" name="Desired_Cable_Forces_Derivatives[8]" valueReference="19" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 20-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(9)" name="Desired_Cable_Forces_Derivatives[9]" valueReference="20" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 21-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(10)" name="Desired_Cable_Forces_Derivatives[10]" valueReference="21" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 22-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(11)" name="Desired_Cable_Forces_Derivatives[11]" valueReference="22" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 23-->
+    </ScalarVariable>
+    <ScalarVariable causality="input" description="Desired_Cable_Forces_Derivatives(12)" name="Desired_Cable_Forces_Derivatives[12]" valueReference="23" variability="continuous">
+      <Real start="0"/>
+      <!--Index = 24-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Position(1)" initial="calculated" name="Load_Position[1]" valueReference="24" variability="continuous">
+      <Real/>
+      <!--Index = 25-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Position(2)" initial="calculated" name="Load_Position[2]" valueReference="25" variability="continuous">
+      <Real/>
+      <!--Index = 26-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Position(3)" initial="calculated" name="Load_Position[3]" valueReference="26" variability="continuous">
+      <Real/>
+      <!--Index = 27-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_LinVelocity(1)" initial="calculated" name="Load_LinVelocity[1]" valueReference="27" variability="continuous">
+      <Real/>
+      <!--Index = 28-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_LinVelocity(2)" initial="calculated" name="Load_LinVelocity[2]" valueReference="28" variability="continuous">
+      <Real/>
+      <!--Index = 29-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_LinVelocity(3)" initial="calculated" name="Load_LinVelocity[3]" valueReference="29" variability="continuous">
+      <Real/>
+      <!--Index = 30-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(1,1)" initial="calculated" name="Load_Orientation[1,1]" valueReference="30" variability="continuous">
+      <Real/>
+      <!--Index = 31-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(1,2)" initial="calculated" name="Load_Orientation[1,2]" valueReference="31" variability="continuous">
+      <Real/>
+      <!--Index = 32-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(1,3)" initial="calculated" name="Load_Orientation[1,3]" valueReference="32" variability="continuous">
+      <Real/>
+      <!--Index = 33-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(2,1)" initial="calculated" name="Load_Orientation[2,1]" valueReference="33" variability="continuous">
+      <Real/>
+      <!--Index = 34-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(2,2)" initial="calculated" name="Load_Orientation[2,2]" valueReference="34" variability="continuous">
+      <Real/>
+      <!--Index = 35-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(2,3)" initial="calculated" name="Load_Orientation[2,3]" valueReference="35" variability="continuous">
+      <Real/>
+      <!--Index = 36-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(3,1)" initial="calculated" name="Load_Orientation[3,1]" valueReference="36" variability="continuous">
+      <Real/>
+      <!--Index = 37-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(3,2)" initial="calculated" name="Load_Orientation[3,2]" valueReference="37" variability="continuous">
+      <Real/>
+      <!--Index = 38-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation(3,3)" initial="calculated" name="Load_Orientation[3,3]" valueReference="38" variability="continuous">
+      <Real/>
+      <!--Index = 39-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(1,1)" initial="calculated" name="Load_Orientation_Derivative[1,1]" valueReference="39" variability="continuous">
+      <Real/>
+      <!--Index = 40-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(1,2)" initial="calculated" name="Load_Orientation_Derivative[1,2]" valueReference="40" variability="continuous">
+      <Real/>
+      <!--Index = 41-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(1,3)" initial="calculated" name="Load_Orientation_Derivative[1,3]" valueReference="41" variability="continuous">
+      <Real/>
+      <!--Index = 42-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(2,1)" initial="calculated" name="Load_Orientation_Derivative[2,1]" valueReference="42" variability="continuous">
+      <Real/>
+      <!--Index = 43-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(2,2)" initial="calculated" name="Load_Orientation_Derivative[2,2]" valueReference="43" variability="continuous">
+      <Real/>
+      <!--Index = 44-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(2,3)" initial="calculated" name="Load_Orientation_Derivative[2,3]" valueReference="44" variability="continuous">
+      <Real/>
+      <!--Index = 45-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(3,1)" initial="calculated" name="Load_Orientation_Derivative[3,1]" valueReference="45" variability="continuous">
+      <Real/>
+      <!--Index = 46-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(3,2)" initial="calculated" name="Load_Orientation_Derivative[3,2]" valueReference="46" variability="continuous">
+      <Real/>
+      <!--Index = 47-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_Orientation_Derivative(3,3)" initial="calculated" name="Load_Orientation_Derivative[3,3]" valueReference="47" variability="continuous">
+      <Real/>
+      <!--Index = 48-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_AngVelocity(1,1)" initial="calculated" name="Load_AngVelocity[1,1]" valueReference="48" variability="continuous">
+      <Real/>
+      <!--Index = 49-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_AngVelocity(2,1)" initial="calculated" name="Load_AngVelocity[2,1]" valueReference="49" variability="continuous">
+      <Real/>
+      <!--Index = 50-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Load_AngVelocity(3,1)" initial="calculated" name="Load_AngVelocity[3,1]" valueReference="50" variability="continuous">
+      <Real/>
+      <!--Index = 51-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(1)" initial="calculated" name="Drone_Positions[1]" valueReference="51" variability="continuous">
+      <Real/>
+      <!--Index = 52-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(2)" initial="calculated" name="Drone_Positions[2]" valueReference="52" variability="continuous">
+      <Real/>
+      <!--Index = 53-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(3)" initial="calculated" name="Drone_Positions[3]" valueReference="53" variability="continuous">
+      <Real/>
+      <!--Index = 54-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(4)" initial="calculated" name="Drone_Positions[4]" valueReference="54" variability="continuous">
+      <Real/>
+      <!--Index = 55-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(5)" initial="calculated" name="Drone_Positions[5]" valueReference="55" variability="continuous">
+      <Real/>
+      <!--Index = 56-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(6)" initial="calculated" name="Drone_Positions[6]" valueReference="56" variability="continuous">
+      <Real/>
+      <!--Index = 57-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(7)" initial="calculated" name="Drone_Positions[7]" valueReference="57" variability="continuous">
+      <Real/>
+      <!--Index = 58-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(8)" initial="calculated" name="Drone_Positions[8]" valueReference="58" variability="continuous">
+      <Real/>
+      <!--Index = 59-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(9)" initial="calculated" name="Drone_Positions[9]" valueReference="59" variability="continuous">
+      <Real/>
+      <!--Index = 60-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(10)" initial="calculated" name="Drone_Positions[10]" valueReference="60" variability="continuous">
+      <Real/>
+      <!--Index = 61-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(11)" initial="calculated" name="Drone_Positions[11]" valueReference="61" variability="continuous">
+      <Real/>
+      <!--Index = 62-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drone_Positions(12)" initial="calculated" name="Drone_Positions[12]" valueReference="62" variability="continuous">
+      <Real/>
+      <!--Index = 63-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(1)" initial="calculated" name="Drones_LinVelocity[1]" valueReference="63" variability="continuous">
+      <Real/>
+      <!--Index = 64-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(2)" initial="calculated" name="Drones_LinVelocity[2]" valueReference="64" variability="continuous">
+      <Real/>
+      <!--Index = 65-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(3)" initial="calculated" name="Drones_LinVelocity[3]" valueReference="65" variability="continuous">
+      <Real/>
+      <!--Index = 66-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(4)" initial="calculated" name="Drones_LinVelocity[4]" valueReference="66" variability="continuous">
+      <Real/>
+      <!--Index = 67-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(5)" initial="calculated" name="Drones_LinVelocity[5]" valueReference="67" variability="continuous">
+      <Real/>
+      <!--Index = 68-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(6)" initial="calculated" name="Drones_LinVelocity[6]" valueReference="68" variability="continuous">
+      <Real/>
+      <!--Index = 69-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(7)" initial="calculated" name="Drones_LinVelocity[7]" valueReference="69" variability="continuous">
+      <Real/>
+      <!--Index = 70-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(8)" initial="calculated" name="Drones_LinVelocity[8]" valueReference="70" variability="continuous">
+      <Real/>
+      <!--Index = 71-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(9)" initial="calculated" name="Drones_LinVelocity[9]" valueReference="71" variability="continuous">
+      <Real/>
+      <!--Index = 72-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(10)" initial="calculated" name="Drones_LinVelocity[10]" valueReference="72" variability="continuous">
+      <Real/>
+      <!--Index = 73-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(11)" initial="calculated" name="Drones_LinVelocity[11]" valueReference="73" variability="continuous">
+      <Real/>
+      <!--Index = 74-->
+    </ScalarVariable>
+    <ScalarVariable causality="output" description="Drones_LinVelocity(12)" initial="calculated" name="Drones_LinVelocity[12]" valueReference="74" variability="continuous">
+      <Real/>
+      <!--Index = 75-->
+    </ScalarVariable>
+    <ScalarVariable causality="independent" description="time" name="time" valueReference="75" variability="continuous">
+      <Real/>
+      <!--Index = 76-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,1)" initial="exact" name="Attachment_Point_Vectors[1,1]" valueReference="76" variability="tunable">
+      <Real start="1"/>
+      <!--Index = 77-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,2)" initial="exact" name="Attachment_Point_Vectors[1,2]" valueReference="77" variability="tunable">
+      <Real start="1"/>
+      <!--Index = 78-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,3)" initial="exact" name="Attachment_Point_Vectors[1,3]" valueReference="78" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 79-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,4)" initial="exact" name="Attachment_Point_Vectors[1,4]" valueReference="79" variability="tunable">
+      <Real start="-1"/>
+      <!--Index = 80-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,5)" initial="exact" name="Attachment_Point_Vectors[1,5]" valueReference="80" variability="tunable">
+      <Real start="1"/>
+      <!--Index = 81-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,6)" initial="exact" name="Attachment_Point_Vectors[1,6]" valueReference="81" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 82-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,7)" initial="exact" name="Attachment_Point_Vectors[1,7]" valueReference="82" variability="tunable">
+      <Real start="-1"/>
+      <!--Index = 83-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,8)" initial="exact" name="Attachment_Point_Vectors[1,8]" valueReference="83" variability="tunable">
+      <Real start="-1"/>
+      <!--Index = 84-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,9)" initial="exact" name="Attachment_Point_Vectors[1,9]" valueReference="84" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 85-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,10)" initial="exact" name="Attachment_Point_Vectors[1,10]" valueReference="85" variability="tunable">
+      <Real start="1"/>
+      <!--Index = 86-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,11)" initial="exact" name="Attachment_Point_Vectors[1,11]" valueReference="86" variability="tunable">
+      <Real start="-1"/>
+      <!--Index = 87-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Attachment_Point_Vectors(1,12)" initial="exact" name="Attachment_Point_Vectors[1,12]" valueReference="87" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 88-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Cable_Resting_Length" initial="exact" name="Cable_Resting_Length" valueReference="88" variability="tunable">
+      <Real start="0.8"/>
+      <!--Index = 89-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Kdc" initial="exact" name="Kdc" valueReference="89" variability="tunable">
+      <Real start="0.001"/>
+      <!--Index = 90-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Kpc" initial="exact" name="Kpc" valueReference="90" variability="tunable">
+      <Real start="10"/>
+      <!--Index = 91-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Damping_Coef" initial="exact" name="Load_Damping_Coef" valueReference="91" variability="tunable">
+      <Real start="1"/>
+      <!--Index = 92-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,1)" initial="exact" name="Load_Inertia_Matrix[1,1]" valueReference="92" variability="tunable">
+      <Real start="0.01"/>
+      <!--Index = 93-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,2)" initial="exact" name="Load_Inertia_Matrix[1,2]" valueReference="93" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 94-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,3)" initial="exact" name="Load_Inertia_Matrix[1,3]" valueReference="94" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 95-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,4)" initial="exact" name="Load_Inertia_Matrix[1,4]" valueReference="95" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 96-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,5)" initial="exact" name="Load_Inertia_Matrix[1,5]" valueReference="96" variability="tunable">
+      <Real start="0.01"/>
+      <!--Index = 97-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,6)" initial="exact" name="Load_Inertia_Matrix[1,6]" valueReference="97" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 98-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,7)" initial="exact" name="Load_Inertia_Matrix[1,7]" valueReference="98" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 99-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,8)" initial="exact" name="Load_Inertia_Matrix[1,8]" valueReference="99" variability="tunable">
+      <Real start="0"/>
+      <!--Index = 100-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Inertia_Matrix(1,9)" initial="exact" name="Load_Inertia_Matrix[1,9]" valueReference="100" variability="tunable">
+      <Real start="0.01"/>
+      <!--Index = 101-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="Load_Mass" initial="exact" name="Load_Mass" valueReference="101" variability="tunable">
+      <Real start="0.7"/>
+      <!--Index = 102-->
+    </ScalarVariable>
+    <ScalarVariable causality="parameter" description="g" initial="exact" name="g" valueReference="102" variability="tunable">
+      <Real start="9.81"/>
+      <!--Index = 103-->
+    </ScalarVariable>
+  </ModelVariables>
+  <ModelStructure>
+    <Outputs>
+      <Unknown index="25"/>
+      <Unknown index="26"/>
+      <Unknown index="27"/>
+      <Unknown index="28"/>
+      <Unknown index="29"/>
+      <Unknown index="30"/>
+      <Unknown index="31"/>
+      <Unknown index="32"/>
+      <Unknown index="33"/>
+      <Unknown index="34"/>
+      <Unknown index="35"/>
+      <Unknown index="36"/>
+      <Unknown index="37"/>
+      <Unknown index="38"/>
+      <Unknown index="39"/>
+      <Unknown index="40"/>
+      <Unknown index="41"/>
+      <Unknown index="42"/>
+      <Unknown index="43"/>
+      <Unknown index="44"/>
+      <Unknown index="45"/>
+      <Unknown index="46"/>
+      <Unknown index="47"/>
+      <Unknown index="48"/>
+      <Unknown index="49"/>
+      <Unknown index="50"/>
+      <Unknown index="51"/>
+      <Unknown index="52"/>
+      <Unknown index="53"/>
+      <Unknown index="54"/>
+      <Unknown index="55"/>
+      <Unknown index="56"/>
+      <Unknown index="57"/>
+      <Unknown index="58"/>
+      <Unknown index="59"/>
+      <Unknown index="60"/>
+      <Unknown index="61"/>
+      <Unknown index="62"/>
+      <Unknown index="63"/>
+      <Unknown index="64"/>
+      <Unknown index="65"/>
+      <Unknown index="66"/>
+      <Unknown index="67"/>
+      <Unknown index="68"/>
+      <Unknown index="69"/>
+      <Unknown index="70"/>
+      <Unknown index="71"/>
+      <Unknown index="72"/>
+      <Unknown index="73"/>
+      <Unknown index="74"/>
+      <Unknown index="75"/>
+    </Outputs>
+    <InitialUnknowns>
+      <Unknown index="25"/>
+      <Unknown index="26"/>
+      <Unknown index="27"/>
+      <Unknown index="28"/>
+      <Unknown index="29"/>
+      <Unknown index="30"/>
+      <Unknown index="31"/>
+      <Unknown index="32"/>
+      <Unknown index="33"/>
+      <Unknown index="34"/>
+      <Unknown index="35"/>
+      <Unknown index="36"/>
+      <Unknown index="37"/>
+      <Unknown index="38"/>
+      <Unknown index="39"/>
+      <Unknown index="40"/>
+      <Unknown index="41"/>
+      <Unknown index="42"/>
+      <Unknown index="43"/>
+      <Unknown index="44"/>
+      <Unknown index="45"/>
+      <Unknown index="46"/>
+      <Unknown index="47"/>
+      <Unknown index="48"/>
+      <Unknown index="49"/>
+      <Unknown index="50"/>
+      <Unknown index="51"/>
+      <Unknown index="52"/>
+      <Unknown index="53"/>
+      <Unknown index="54"/>
+      <Unknown index="55"/>
+      <Unknown index="56"/>
+      <Unknown index="57"/>
+      <Unknown index="58"/>
+      <Unknown index="59"/>
+      <Unknown index="60"/>
+      <Unknown index="61"/>
+      <Unknown index="62"/>
+      <Unknown index="63"/>
+      <Unknown index="64"/>
+      <Unknown index="65"/>
+      <Unknown index="66"/>
+      <Unknown index="67"/>
+      <Unknown index="68"/>
+      <Unknown index="69"/>
+      <Unknown index="70"/>
+      <Unknown index="71"/>
+      <Unknown index="72"/>
+      <Unknown index="73"/>
+      <Unknown index="74"/>
+      <Unknown index="75"/>
+    </InitialUnknowns>
+  </ModelStructure>
+</fmiModelDescription>

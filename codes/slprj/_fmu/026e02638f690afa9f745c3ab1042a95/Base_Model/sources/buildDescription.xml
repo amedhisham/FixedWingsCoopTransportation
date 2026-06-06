@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<fmiBuildDescription fmiVersion="3.0">
+  <BuildConfiguration description="Build configuration for desktop platforms" modelIdentifier="Base_Model">
+    <SourceFileSet language="C99">
+      <SourceFile name="Base_Model.c"/>
+      <SourceFile name="Base_Model_data.c"/>
+      <SourceFile name="RTWCG_FMU_util.c"/>
+      <SourceFile name="Base_Model_fmu.c"/>
+    </SourceFileSet>
+  </BuildConfiguration>
+</fmiBuildDescription>
