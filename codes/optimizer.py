@@ -16,7 +16,7 @@ def compute_structured_nullspace(curr_orientation_matrix, Attachment_Point_Vecto
 
     # P15-optimal cycle for n=4: 0->2->3->1->0 (min vertex angle ~130° vs 100° for sequential)
     # Sequential cycle is used for all other n
-    if n_carriers == 4:
+    if n_carriers == 10:
         cycle = [0, 2, 3, 1, 0]
     else:
         cycle = list(range(n_carriers)) + [0]

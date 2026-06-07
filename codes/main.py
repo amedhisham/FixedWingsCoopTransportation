@@ -9,7 +9,7 @@ from optimizer import cable_force_calculation , init_optimizer , optimizer
 import time as time_module
 from scipy.io import savemat
 
-fmu_filename = 'Base_Model_three_drones.fmu'
+fmu_filename = 'Base_Model.fmu'
 
 # ---------------------------------------------------------
 # PHASE 1: Parse the Dictionary
@@ -44,10 +44,10 @@ fmu.setupExperiment(startTime=0.0)
 fmu.enterInitializationMode()
 
 # Global parameters
-n_carriers = 3
-epsilon = 0.2        # Minimum velocity threshold
+n_carriers = 4
+epsilon = 0.50        # Minimum velocity threshold
 w_pos, w_vel = 1e-6, 1e-6 # Cost weights 
-phases = np.array([0, np.pi/3, 2*np.pi/3])
+phases = np.array([0, np.pi/2, 0, np.pi/2])  # two pairs: 0&2 share, 1&3 share
 bypass_optimizer = 0 #bypass optimizer for debugging , static controller
 bypass_controller = 0 #bypass controller for debugging , static controller with feedback
 
@@ -71,7 +71,7 @@ fmu.exitInitializationMode()
 # ---------------------------------------------------------
 time = 0.0
 step_size = 0.01  # 100 Hz control loop
-end_time = 15.0
+end_time = 25.0
 
 time_history = []
 z_position_history = []
@@ -81,12 +81,18 @@ drone2_VelNorm_history = []
 drone3_VelNorm_history = []
 drone4_VelNorm_history = []
 
+drone1_xy_history = []
+drone2_xy_history = []
+drone3_xy_history = []
+drone4_xy_history = []
+load_xy_history = []
+
 force_history = []
 force_derv_history = []
 
-Fz = 0.7 * 9.81/3
+Fz = 0.7 * 9.81/4
 # Fz = 0
-desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
+desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
 
 
 # 1. PRE-COMPUTE THE MEMORY ADDRESSES 
@@ -119,7 +125,10 @@ Attachment_Point_Vectors = fmu.getReal([vrs['Attachment_Point_Vectors[1,1]'],
                        vrs['Attachment_Point_Vectors[1,6]'],
                        vrs['Attachment_Point_Vectors[1,7]'],
                        vrs['Attachment_Point_Vectors[1,8]'],
-                       vrs['Attachment_Point_Vectors[1,9]']])
+                       vrs['Attachment_Point_Vectors[1,9]'],
+                       vrs['Attachment_Point_Vectors[1,10]'],
+                       vrs['Attachment_Point_Vectors[1,11]'],
+                       vrs['Attachment_Point_Vectors[1,12]']])
 
 Attachment_Point_Vectors = np.array(Attachment_Point_Vectors).reshape((n_carriers, 3))
 
@@ -161,9 +170,9 @@ while time < end_time:
                        vrs['Drone_Positions[8]'], 
                        vrs['Drone_Positions[9]']]))
     
-    # drone4_pos = np.array(fmu.getReal([vrs['Drone_Positions[10]'], 
-    #                    vrs['Drone_Positions[11]'], 
-    #                    vrs['Drone_Positions[12]']]))
+    drone4_pos = np.array(fmu.getReal([vrs['Drone_Positions[10]'], 
+                       vrs['Drone_Positions[11]'], 
+                       vrs['Drone_Positions[12]']]))
     
     drone1_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[1]'], 
                        vrs['Drones_LinVelocity[2]'], 
@@ -177,9 +186,9 @@ while time < end_time:
                        vrs['Drones_LinVelocity[8]'], 
                        vrs['Drones_LinVelocity[9]']]))
     
-    # drone4_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[10]'], 
-    #                    vrs['Drones_LinVelocity[11]'], 
-    #                    vrs['Drones_LinVelocity[12]']]))
+    drone4_linVel = np.array(fmu.getReal([vrs['Drones_LinVelocity[10]'], 
+                       vrs['Drones_LinVelocity[11]'], 
+                       vrs['Drones_LinVelocity[12]']]))
 
     curr_orientation_matrix = fmu.getReal([vrs['Load_Orientation[1,1]'], 
                        vrs['Load_Orientation[1,2]'], 
@@ -203,7 +212,7 @@ while time < end_time:
 
     # Store the data
     time_history.append(time)
-    current_pos_z = curr_pos[1]
+    current_pos_z = curr_pos[0]
     # print(currentPos_z)
     z_position_history.append(current_pos_z)
 
@@ -216,8 +225,14 @@ while time < end_time:
     drone3_VelNorm = np.linalg.norm(drone3_linVel)
     drone3_VelNorm_history.append(drone3_VelNorm)
 
-    # drone4_VelNorm = np.linalg.norm(drone4_linVel)
-    # drone4_VelNorm_history.append(drone4_VelNorm)
+    drone4_VelNorm = np.linalg.norm(drone4_linVel)
+    drone4_VelNorm_history.append(drone4_VelNorm)
+
+    drone1_xy_history.append(drone1_pos[:2])
+    drone2_xy_history.append(drone2_pos[:2])
+    drone3_xy_history.append(drone3_pos[:2])
+    drone4_xy_history.append(drone4_pos[:2])
+    load_xy_history.append(curr_pos[:2])
 
     # B. DESIRED WRENCH CALCULATION: Calculate error then pass it to wrench controller 
     ep , eR , ev , ew = error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time)
@@ -282,26 +297,47 @@ print(f"Time : {elapsed:.5f} ")
 
 # z_position_history = [abs(x) for x in z_position_history]
 
-print(min(z_position_history))
+# print(min(z_position_history))
 plt.figure(figsize=(10, 5))
-plt.step(time_history, z_position_history, label="FMU Payload Z", color='blue', where='post')
-plt.title("Payload Z-Position over Time")
+plt.step(time_history, z_position_history, label="FMU Payload X", color='blue', where='post')
+plt.title("Payload X-Position over Time")
 plt.xlabel("Time (s)")
-plt.ylabel("Z Position (m)")
+plt.ylabel("X Position (m)")
 plt.grid(True)
 plt.legend()
 plt.show()
 
-plt.plot(time_history, drone1_VelNorm_history, label='norm 1')
-plt.plot(time_history, drone2_VelNorm_history, label='norm 2')
-plt.plot(time_history, drone3_VelNorm_history, label='norm 3')
-# plt.plot(time_history, drone4_VelNorm_history, label='norm 4')
+plt.plot(time_history, drone1_VelNorm_history, label='Drone 1')
+plt.plot(time_history, drone2_VelNorm_history, label='Drone 2')
+plt.plot(time_history, drone3_VelNorm_history, label='Drone 3')
+plt.plot(time_history, drone4_VelNorm_history, label='Drone 4')
 
 plt.xlabel('Time')
 plt.ylabel('Norm value')
-plt.title('Norms over time')
+plt.title('Drones Velocity Norms over time')
 
 plt.legend()
 plt.grid(True)
 
+plt.show()
+
+d1 = np.array(drone1_xy_history)
+d2 = np.array(drone2_xy_history)
+d3 = np.array(drone3_xy_history)
+d4 = np.array(drone4_xy_history)
+
+load_xy = np.array(load_xy_history)
+
+plt.figure(figsize=(8, 8))
+plt.plot(d1[:, 0], d1[:, 1], label='Drone 1')
+plt.plot(d2[:, 0], d2[:, 1], label='Drone 2')
+plt.plot(d3[:, 0], d3[:, 1], label='Drone 3')
+plt.plot(d4[:, 0], d4[:, 1], label='Drone 4')
+plt.plot(load_xy[:, 0], load_xy[:, 1], 'k--', linewidth=2, label='Load')
+plt.xlabel('X (m)')
+plt.ylabel('Y (m)')
+plt.title('Drone XY trajectories')
+plt.legend()
+plt.grid(True)
+plt.axis('equal')
 plt.show()
