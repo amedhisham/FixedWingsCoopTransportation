@@ -146,28 +146,26 @@ def init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases):
     for i in range(n_carriers):
         idx = slice(i*3, (i+1)*3)
         f_i = f_total[idx]
-        
-        # Tension calculation (Eq 16 magnitude)
-        T_i_sq = ca.sumsqr(f_i) + 1e-6 # 1e-6 prevents divide-by-zero during solver init
+
+        # Tension and projector computed from optimization variables (per paper Sec. IV-D)
+        T_i_sq = ca.sumsqr(f_i) + 1e-6
         T_i = ca.sqrt(T_i_sq)
-        
-        # Projector matrix (Eq 18)
         q_i = f_i / T_i
         Pi_i = ca.SX.eye(3) - ca.mtimes(q_i, q_i.T)
-        
+
         # Internal derivative term (Eq 21)
         g_i = ca.mtimes(N_dot_sym[idx, :], lam) + ca.mtimes(N_sym[idx, :], lam_dot)
-        
+
         # Carrier velocity (Eq 22)
         v_Ri = v_L_sym[idx] + (Cable_Resting_Length / T_i) * ca.mtimes(Pi_i, e_sym[idx] + g_i)
-        
+
         # Constraint: ||v_Ri||^2 >= epsilon^2
         constraints.append(ca.sumsqr(v_Ri))
 
     # --- 6. COMPILE SOLVER ---
     # Stack all parameters so we can feed them as one 1D array later
-    p_sym = ca.vertcat(t_sym, prev_x_sym, prev_lam_sym, prev_lam_dot_sym, 
-                    w_d_sym, ca.vec(G_pinv_sym), ca.vec(N_sym), ca.vec(N_dot_sym), 
+    p_sym = ca.vertcat(t_sym, prev_x_sym, prev_lam_sym, prev_lam_dot_sym,
+                    w_d_sym, ca.vec(G_pinv_sym), ca.vec(N_sym), ca.vec(N_dot_sym),
                     e_sym, v_L_sym)
 
     nlp = {'x': opt_x, 'f': cost, 'g': ca.vertcat(*constraints), 'p': p_sym}
@@ -184,7 +182,7 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
         # Histories for Optimization
         xi0, A0 = 2.0, 1.2
         optimizer.prev_x = np.array([xi0, A0])
-        optimizer.prev_x = np.array([2.0, 1.2]) 
+        # optimizer.prev_x = np.array([2.0, 1.2]) 
         optimizer.prev_lam =  A0 * np.cos(xi0 * 0.0 + phases)
         optimizer.prev_lam_dot = -A0 * xi0 * np.sin(xi0 * 0.0 + phases)
 
@@ -216,12 +214,11 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     
     # 3. Pack parameters for CasADi
     p_val = np.concatenate([
-        [time], optimizer.prev_x, optimizer.prev_lam, optimizer.prev_lam_dot, 
-        w_d, Grasp_pinv_Matrix.flatten('F'), N.flatten('F'), N_dot.flatten('F'), 
+        [time], optimizer.prev_x, optimizer.prev_lam, optimizer.prev_lam_dot,
+        w_d, Grasp_pinv_Matrix.flatten('F'), N.flatten('F'), N_dot.flatten('F'),
         e_total, v_L_stack
     ])
     
-    lbg = [] # Lower bounds
     lbg = [epsilon**2] * n_carriers
 
     # 4. SOLVE
@@ -231,8 +228,18 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
         opt_x = np.array([opt_xi, opt_A])
 
     else:
+        # Both ξ and A can only increase (or stay): prevents degenerate solution where
+        # IPOPT kills oscillations to satisfy the constraint via load velocity alone.
+        # Per-step cap prevents spikes in v_Ri caused by large λ̇ finite differences.
+        delta_xi = 0.05
+        delta_A  = 0.05
+
+        lbx = [optimizer.prev_x[0], optimizer.prev_x[1]]          # monotone non-decreasing
+        ubx = [optimizer.prev_x[0] + delta_xi,
+               optimizer.prev_x[1] + delta_A]
+
         res = casadi_solver(x0=optimizer.prev_x, p=p_val,
-                            lbx=[0.1, 0.0], ubx=[np.inf, np.inf],
+                            lbx=lbx, ubx=ubx,
                             lbg=lbg, ubg=[np.inf]*n_carriers)
 
         if casadi_solver.stats()['return_status'] == 'Solve_Succeeded':
@@ -245,13 +252,14 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     # 5. Extract our 4 Lambda Stars and their analytical derivatives
     lambda_star = opt_A * np.cos(opt_xi * time + phases)
     lambda_star_dot = -opt_A * opt_xi * np.sin(opt_xi * time + phases)
+    # lambda_star_dot = (lambda_star - optimizer.prev_lam) / step_size
 
     # Calculate f_dot using Equation 19
     f_dot = e_total + (N_dot @ lambda_star) + (N @ lambda_star_dot)
 
     optimizer.prev_x = opt_x
     optimizer.prev_lam = lambda_star
-    optimizer.prev_lam_dot = -opt_A * opt_xi * np.sin(opt_xi * time + phases)
+    optimizer.prev_lam_dot = lambda_star_dot
     optimizer.prev_w_d = w_d
     optimizer.prev_G_pinv = Grasp_pinv_Matrix
     optimizer.prev_N = N

@@ -45,8 +45,8 @@ fmu.enterInitializationMode()
 
 # Global parameters
 n_carriers = 4
-epsilon = 0.50        # Minimum velocity threshold
-w_pos, w_vel = 1e-6, 1e-6 # Cost weights 
+epsilon = 0.20        # Minimum velocity threshold
+w_pos, w_vel = 0, 0 # Cost weights 
 phases = np.array([0, np.pi/2, 0, np.pi/2])  # two pairs: 0&2 share, 1&3 share
 bypass_optimizer = 0 #bypass optimizer for debugging , static controller
 bypass_controller = 0 #bypass controller for debugging , static controller with feedback
@@ -81,14 +81,21 @@ drone2_VelNorm_history = []
 drone3_VelNorm_history = []
 drone4_VelNorm_history = []
 
-drone1_xy_history = []
-drone2_xy_history = []
-drone3_xy_history = []
-drone4_xy_history = []
-load_xy_history = []
+drone1_pos_history = []
+drone2_pos_history = []
+drone3_pos_history = []
+drone4_pos_history = []
+load_pos_history = []
+xi_history = []
+A_history = []
 
 force_history = []
 force_derv_history = []
+
+# Low-level controller filter (simulates finite actuator bandwidth)
+llc_tau = 0.2   # time constant in seconds — tune to match expected drone bandwidth
+llc_alpha = step_size / (llc_tau + step_size)
+prev_filtered_forces = np.array([0.0, 0.0, 0.7*9.81/4] * n_carriers)
 
 Fz = 0.7 * 9.81/4
 # Fz = 0
@@ -214,7 +221,7 @@ while time < end_time:
     time_history.append(time)
     current_pos_z = curr_pos[0]
     # print(currentPos_z)
-    z_position_history.append(current_pos_z)
+    z_position_history.append(drone3_pos[0])
 
     drone1_VelNorm = np.linalg.norm(drone1_linVel)
     drone1_VelNorm_history.append(drone1_VelNorm)
@@ -228,11 +235,11 @@ while time < end_time:
     drone4_VelNorm = np.linalg.norm(drone4_linVel)
     drone4_VelNorm_history.append(drone4_VelNorm)
 
-    drone1_xy_history.append(drone1_pos[:2])
-    drone2_xy_history.append(drone2_pos[:2])
-    drone3_xy_history.append(drone3_pos[:2])
-    drone4_xy_history.append(drone4_pos[:2])
-    load_xy_history.append(curr_pos[:2])
+    drone1_pos_history.append(drone1_pos)
+    drone2_pos_history.append(drone2_pos)
+    drone3_pos_history.append(drone3_pos)
+    drone4_pos_history.append(drone4_pos)
+    load_pos_history.append(curr_pos)
 
     # B. DESIRED WRENCH CALCULATION: Calculate error then pass it to wrench controller 
     ep , eR , ev , ew = error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time)
@@ -245,19 +252,21 @@ while time < end_time:
 
     # C. RUN OPTIMIZER: Pass states to fixed-wing optimizer
     lambda_star, f_dot = optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel,w_d,Attachment_Point_Vectors,epsilon,step_size,n_carriers,phases,bypass_optimizer)
-    
+    xi_history.append(optimizer.prev_x[0])
+    A_history.append(optimizer.prev_x[1])
+
     # drone1_VelNorm = np.linalg.norm(drone1_pos)
     # drone1_VelNorm_history.append(w_d[2])
 
     desired_forces , Grasp_pinv_Matrix = cable_force_calculation(curr_orientation_matrix,Attachment_Point_Vectors,w_d,lambda_star,n_carriers)
-    desired_forces = desired_forces.tolist()
-    desired_force_derivatives = f_dot.tolist()
-    # Fz = 0.7 * 9.81/4
-    # desired_forces = [0.0, 0.0,Fz, 0.0, 0.0, Fz, 0.0, 0.0, Fz]
-    # desired_force_derivatives = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-    # drone1_VelNorm = np.linalg.norm(drone1_linVel)
-    # drone1_VelNorm_history.append(drone1_VelNorm)
+    # Low-level controller: first-order filter simulating finite actuator bandwidth
+    filtered_forces = llc_alpha * desired_forces + (1 - llc_alpha) * prev_filtered_forces
+    desired_force_derivatives = (filtered_forces - prev_filtered_forces) / step_size
+    prev_filtered_forces = filtered_forces.copy()
+
+    desired_forces = filtered_forces.tolist()
+    desired_force_derivatives = desired_force_derivatives.tolist()
 
     force_history.append(desired_forces)
     force_derv_history.append(desired_force_derivatives)
@@ -321,19 +330,47 @@ plt.grid(True)
 
 plt.show()
 
-d1 = np.array(drone1_xy_history)
-d2 = np.array(drone2_xy_history)
-d3 = np.array(drone3_xy_history)
-d4 = np.array(drone4_xy_history)
+d1 = np.array(drone1_pos_history)
+d2 = np.array(drone2_pos_history)
+d3 = np.array(drone3_pos_history)
+d4 = np.array(drone4_pos_history)
+dl = np.array(load_pos_history)
 
-load_xy = np.array(load_xy_history)
+fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+labels = ['X (m)', 'Y (m)', 'Z (m)']
+for idx, (ax, lbl) in enumerate(zip(axes, labels)):
+    ax.plot(time_history, d1[:, idx], label='Drone 1')
+    ax.plot(time_history, d2[:, idx], label='Drone 2')
+    ax.plot(time_history, d3[:, idx], label='Drone 3')
+    ax.plot(time_history, d4[:, idx], label='Drone 4')
+    ax.plot(time_history, dl[:, idx], 'k--', linewidth=2, label='Load')
+    ax.set_ylabel(lbl)
+    ax.legend(loc='upper right')
+    ax.grid(True)
+axes[2].set_xlabel('Time (s)')
+fig.suptitle('Drone XYZ positions over time')
+plt.tight_layout()
+plt.show()
+
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+ax1.plot(time_history, xi_history)
+ax1.set_ylabel('ξ (rad/s)')
+ax1.grid(True)
+ax2.plot(time_history, A_history)
+ax2.set_ylabel('A')
+ax2.set_xlabel('Time (s)')
+ax2.grid(True)
+fig.suptitle('Optimizer parameters over time')
+plt.tight_layout()
+plt.show()
+
 
 plt.figure(figsize=(8, 8))
 plt.plot(d1[:, 0], d1[:, 1], label='Drone 1')
 plt.plot(d2[:, 0], d2[:, 1], label='Drone 2')
 plt.plot(d3[:, 0], d3[:, 1], label='Drone 3')
 plt.plot(d4[:, 0], d4[:, 1], label='Drone 4')
-plt.plot(load_xy[:, 0], load_xy[:, 1], 'k--', linewidth=2, label='Load')
+plt.plot(dl[:, 0], dl[:, 1], 'k--', linewidth=2, label='Load')
 plt.xlabel('X (m)')
 plt.ylabel('Y (m)')
 plt.title('Drone XY trajectories')

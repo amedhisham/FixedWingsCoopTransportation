@@ -7,7 +7,7 @@ def get_reference_trajectory(t):
     Calculates a piecewise straight-line trajectory:
 
     """
-    v_move = 0.7   # Speed during the moving phase (m/s) - change this to whatever you want
+    v_move = 1.1   # Speed during the moving phase (m/s) - change this to whatever you want
     z_hover = 1.39  # Constant flight altitude (m)
     
     # Initialize variables
