@@ -26,8 +26,8 @@ COMPARE = False     # when desync is on, overlay a coherent run so degradation i
 # Note: with ZERO residual actions, own_noise has no visible effect (no policy is
 # reading the observation yet); load_noise / actuation_noise / delay / clock_offset do.
 DESYNC = dict(
-    ctrl_delay=[0, 2, 3, 1],                 # steps of load-estimate delay (x10 ms) per drone
-    clock_offset=[0.0, 0.005, -0.005, 0.006],   # seconds added to each drone's clock
+    ctrl_delay=[0, 2, 2, 1],                 # steps of load-estimate delay (x10 ms) per drone
+    clock_offset=[0.0, 0.00, -0.00, 0.00],   # seconds added to each drone's clock
     pos_noise=0.03,                          # load position sensing noise, m   (shared expert + obs)
     rot_noise=0.01,                          # load orientation sensing noise
     vel_noise=0.10,                          # load linear-velocity sensing noise, m/s
