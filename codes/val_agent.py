@@ -67,7 +67,7 @@ def run_agent():
     forces, loads, t = [], [], 0.0
     while t < T_END - 1e-9:
         pos, R, vel, w = unpack(obs)
-        f, _ = agent.compute_forces(pos, vel, R, w, t)
+        f, _, _ = agent.compute_forces(pos, vel, R, w, t)
         ff = LLC_ALPHA * f + (1 - LLC_ALPHA) * prev_f
         deriv = (ff - prev_f) / DT
         prev_f = ff.copy()

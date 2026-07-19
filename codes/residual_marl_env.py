@@ -241,11 +241,13 @@ class ResidualMARLEnv(ParallelEnv):
         #        (already delayed + noised, shared with that drone's observation),
         #        on its own offset clock, and we keep only its own slice ---
         f_base = np.zeros(3 * self.n)
+        lam_own = np.zeros(self.n)                               # each drone's own lambda coefficient
         for i, ex in enumerate(self.experts):
             p_i, R_i, v_i, w_i = self._estimates[i]
             t_i = self.t + self.clock_offset[i]                  # clock desync (expert only)
-            f_full, _ = ex.compute_forces(p_i, v_i, R_i, w_i, t_i)
+            f_full, _, lam_full = ex.compute_forces(p_i, v_i, R_i, w_i, t_i)
             f_base[3 * i: 3 * i + 3] = f_full[3 * i: 3 * i + 3]
+            lam_own[i] = lam_full[i]
 
         # --- 2. Residual RL: add the (norm-capped) per-agent action ---
         f_cmd = f_base.copy()
@@ -287,7 +289,8 @@ class ResidualMARLEnv(ParallelEnv):
         observations = self._build_obs(obs42)
         terminations = {a: False for a in self.possible_agents}
         truncations = {a: truncated for a in self.possible_agents}
-        infos = {a: {} for a in self.possible_agents}
+        # Expose each drone's own optimizer lambda (the IL target for Formulation 1).
+        infos = {name: {"lambda": lam_own[i]} for i, name in enumerate(self.possible_agents)}
 
         if truncated:
             self.agents = []
