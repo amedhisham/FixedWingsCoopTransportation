@@ -1,0 +1,204 @@
+"""
+collect_prdot_data.py — data for the pR_dot policy (the optimizer's true I/O, distilled).
+
+The optimizer's whole computation exists to produce ONE thing per drone: the carrier
+velocity v_Ri (Eq. 22), which it regulates against the epsilon floor. So instead of
+feeding the net the raw ingredients (G, N, w_d, ...) we feed that distilled quantity
+directly, plus the clock for phase and the previous lambda for the amplitude anchor:
+
+    input :  [ clock (14) ,  pR_dot (n*3) ,  lambda_{t-1} (n) ]
+    output:  lambda[n]                              # the optimizer's full vector
+
+Roles: clock -> oscillation phase; pR_dot -> amplitude feedback (the constraint
+variable); lambda_{t-1} -> the smoothness/anchor state (pR_dot is lossy about it, so
+the net cannot recover it otherwise).
+
+pR_dot is reconstructed EXACTLY as the optimizer computes v_Ri (analytic, unfiltered
+force and analytic derivative, Eq. 19+22, tension floor) — NOT from the LLC-filtered
+plant force — so the net learns on the same quantity the optimizer keyed its lambda on.
+It is one-step lagged: built from lambda_{t-1} (and lambda_dot_{t-1} via finite
+difference of the lambda history, so collection and deploy compute it identically).
+
+reconstruct/build_input live here so deploy_prdot.py imports the identical helpers —
+collection and deployment cannot diverge.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from fmu_plant_env import FMUPlantEnv
+from classical_agent import ClassicalAgent
+from optimizer import calculate_grasp_and_nullspace, cable_force_calculation
+from controller import error_calculation, get_reference_trajectory
+from collect_il_data import clock_features, read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
+
+BYPASS_OPT = False   # adaptive optimizer (the real sweeping target)
+OUT = "prdot_dataset.npz"
+
+# Optimizer's initial lambda (matches ClassicalAgent.reset's seed): A0*cos(xi0*0 + phases).
+LAM0 = 1.2 * np.cos(np.asarray(PHASES))
+
+
+def reconstruct(R, vL, omega, w_d, lam_prev, lamdot_prev,
+                prev_G_pinv, prev_Nmat, prev_w_d, Bb, L0, dt):
+    """Carrier velocities v_R (n,3), computed EXACTLY as the optimizer's v_Ri (Eq. 22).
+
+    Analytic, filter-independent: f = G+ w_d + N lambda_{t-1}, and its analytic
+    derivative f_dot = e_total + N_dot lambda_{t-1} + N lambda_dot_{t-1} (Eq. 19), with
+    the sqrt(||f||^2 + 1e-6) tension floor. One-step lagged via lambda_{t-1}.
+
+    Also returns the current (G_pinv, N) so the caller can roll the derivative history.
+    First step: pass prev_*=None -> zero finite-difference derivatives (matches optimizer).
+    """
+    _, G_pinv, Nmat = calculate_grasp_and_nullspace(R, Bb, N)
+
+    if prev_G_pinv is None:
+        G_pinv_dot = np.zeros_like(G_pinv)
+        N_dot = np.zeros_like(Nmat)
+        w_d_dot = np.zeros_like(w_d)
+    else:
+        G_pinv_dot = (G_pinv - prev_G_pinv) / dt
+        N_dot = (Nmat - prev_Nmat) / dt
+        w_d_dot = (w_d - prev_w_d) / dt
+
+    e_total = G_pinv_dot @ w_d + G_pinv @ w_d_dot            # Eq. 20
+    f = G_pinv @ w_d + Nmat @ lam_prev                       # analytic cable force
+    f_dot = e_total + N_dot @ lam_prev + Nmat @ lamdot_prev  # Eq. 19
+
+    vR = np.zeros((N, 3))
+    for i in range(N):
+        f_i = f[3 * i: 3 * i + 3]
+        fd_i = f_dot[3 * i: 3 * i + 3]
+        T = np.sqrt(f_i @ f_i + 1e-6)                        # tension floor, as optimizer
+        q = f_i / T
+        vLi = vL + R @ np.cross(omega, Bb[i])
+        Pi = np.eye(3) - np.outer(q, q)
+        vR[i] = vLi + (L0 / T) * Pi @ fd_i
+    return vR, G_pinv, Nmat
+
+
+def build_input(t, vR, prev_lam):
+    """The net's input row: [clock(14), pR_dot(n*3), lambda_{t-1}(n)]."""
+    return np.concatenate([clock_features(t), vR.flatten(), prev_lam])
+
+
+def collect():
+    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
+    obs42, _ = env.reset()
+    J, Bb, m, L0 = read_params(env)
+    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
+
+    prev_f = np.array([0.0, 0.0, FZ] * N)           # applied force (for plant filtering only)
+    prev_G_pinv = prev_Nmat = prev_w_d = None       # reconstruct's derivative history
+    prev_lam = LAM0.copy()                          # lambda_{t-1}
+    prev_prev_lam = LAM0.copy()                     # lambda_{t-2}  (for lambda_dot)
+    X_rows, Y_rows = [], []
+
+    # Histories for the diagnostic plots.
+    t_hist, load_hist, ref_hist = [], [], []
+    dpos = [[] for _ in range(N)]
+    dvel_true = [[] for _ in range(N)]              # plant drone velocity norm
+    prnorm = [[] for _ in range(N)]                 # reconstructed pR_dot norm (the feature)
+    lam_hist = [[] for _ in range(N)]               # optimizer target lambda
+
+    t = 0.0
+    while t < T_END - 1e-9:
+        pos = obs42[0:3]
+        R = np.round(obs42[3:12].reshape((3, 3), order="C"), 6)
+        vel, angvel = obs42[12:15], obs42[15:18]
+
+        # w_d ONCE (advances integrators once); reused for both input and target.
+        ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
+        w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
+
+        # Input: optimizer-exact pR_dot from lambda_{t-1} + current load state.
+        lamdot_prev = (prev_lam - prev_prev_lam) / DT
+        vR, G_pinv, Nmat = reconstruct(R, vel, angvel, w_d, prev_lam, lamdot_prev,
+                                       prev_G_pinv, prev_Nmat, prev_w_d, Bb, L0, DT)
+        X_rows.append(build_input(t, vR, prev_lam))
+
+        # Target: the optimizer's full lambda vector (same w_d, so no double integration).
+        lam, _ = agent.optimize(t, R, vel, angvel, w_d, bypass=BYPASS_OPT)
+        Y_rows.append(lam)
+        f_full, _ = cable_force_calculation(R, Bb, w_d, lam, N)
+
+        # Record.
+        t_hist.append(t)
+        load_hist.append(pos.copy())
+        ref_hist.append(get_reference_trajectory(t)[0].copy())
+        for i in range(N):
+            dpos[i].append(obs42[18 + 3 * i: 18 + 3 * i + 3].copy())
+            dvel_true[i].append(np.linalg.norm(obs42[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
+            prnorm[i].append(np.linalg.norm(vR[i]))
+            lam_hist[i].append(lam[i])
+
+        # Step plant (filtered force).
+        ff = LLC_ALPHA * f_full + (1 - LLC_ALPHA) * prev_f
+        deriv = (ff - prev_f) / DT
+        prev_f = ff.copy()
+        obs42, *_ = env.step(np.concatenate([ff, deriv]))
+
+        # Roll histories.
+        prev_G_pinv, prev_Nmat, prev_w_d = G_pinv, Nmat, w_d
+        prev_prev_lam, prev_lam = prev_lam, lam.copy()
+        t += DT
+    env.close()
+
+    hist = dict(t=np.array(t_hist), load=np.array(load_hist), ref=np.array(ref_hist),
+                dpos=[np.array(p) for p in dpos],
+                dvel_true=[np.array(v) for v in dvel_true],
+                prnorm=[np.array(v) for v in prnorm],
+                lam=[np.array(l) for l in lam_hist])
+    return (np.asarray(X_rows, dtype=np.float32),
+            np.asarray(Y_rows, dtype=np.float32), hist)
+
+
+def plot(hist):
+    t = hist["t"]; load = hist["load"]; ref = hist["ref"]
+
+    # 1. Load tracking.
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    for k, (ax, lbl) in enumerate(zip(axes, ["X", "Y", "Z"])):
+        ax.plot(t, ref[:, k], "k--", lw=2, label="reference")
+        ax.plot(t, load[:, k], "b", label="optimizer")
+        ax.set_ylabel(f"{lbl} (m)"); ax.grid(True); ax.legend(loc="upper right")
+    axes[2].set_xlabel("Time (s)"); fig.suptitle("Load tracking — optimizer (collection)")
+
+    # 2. Drone velocity norms: reconstructed pR_dot (feature) vs true plant velocity.
+    plt.figure()
+    for i in range(N):
+        c = f"C{i}"
+        plt.plot(t, hist["prnorm"][i], c, label=f"Drone {i+1} recon pR_dot")
+        plt.plot(t, hist["dvel_true"][i], c, ls="--", alpha=0.5)
+    plt.axhline(EPS, ls=":", c="gray", label="epsilon")
+    plt.xlabel("Time (s)"); plt.ylabel("Velocity norm (m/s)")
+    plt.title("Reconstructed pR_dot (solid) vs true drone vel (dashed)"); plt.legend(); plt.grid(True)
+
+    # 3. Optimizer lambda (the target) per drone.
+    fig3, ax3 = plt.subplots(N, 1, figsize=(11, 8), sharex=True)
+    for i, ax in enumerate(ax3):
+        ax.plot(t, hist["lam"][i], "m")
+        ax.set_ylabel(f"$\\lambda_{i+1}$ target"); ax.grid(True)
+    ax3[-1].set_xlabel("Time (s)"); fig3.suptitle("Optimizer lambda (regression target)")
+
+    # 4. Drone XY trajectories.
+    plt.figure(figsize=(8, 6))
+    for i in range(N):
+        plt.plot(hist["dpos"][i][:, 0], hist["dpos"][i][:, 1], label=f"Drone {i+1}")
+    plt.plot(load[:, 0], load[:, 1], "k--", lw=2, label="Load")
+    plt.xlabel("X (m)"); plt.ylabel("Y (m)")
+    plt.title("Drone XY trajectories — optimizer"); plt.legend(); plt.grid(True); plt.axis("equal")
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    X, Y, hist = collect()
+    np.savez(OUT, X=X, Y=Y)
+    print(f"saved {OUT}   steps={len(X)}   X {X.shape}  Y {Y.shape}")
+    print(f"  input = clock(14) + pR_dot({3*N}) + lambda_prev({N})  ->  lambda[{N}]")
+    print(f"  lambda range [{Y.min():.3f}, {Y.max():.3f}]  std {Y.std():.3f}")
+    for i in range(N):
+        pr = hist["prnorm"][i]; tv = hist["dvel_true"][i]
+        print(f"  drone {i+1}: recon pR_dot norm mean {pr.mean():.3f}  "
+              f"| recon-vs-true RMSE {np.sqrt(np.mean((pr - tv) ** 2)):.4f}")
+    plot(hist)
