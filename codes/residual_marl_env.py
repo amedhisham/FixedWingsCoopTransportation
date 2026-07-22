@@ -36,7 +36,7 @@ from pettingzoo import ParallelEnv
 from fmu_plant_env import FMUPlantEnv
 from controller import error_calculation
 from networks import Actor
-from collect_prdot_data import reconstruct, build_input, LAM0
+from collect_prdot_data import reconstruct_lp, build_input, LAM0
 
 
 class LocalModelAgent:
@@ -49,7 +49,7 @@ class LocalModelAgent:
     STATEFUL: carries its own lambda / G+ / N / w_d history for the analytic reconstruction
     — exactly deploy_prdot's single loop, one copy per drone."""
 
-    def __init__(self, n, dt, phases, epsilon, L0, mass, J, Bb):
+    def __init__(self, n, dt, phases, epsilon, L0, mass, J, Bb, recon_alpha):
         self.n = n
         self.dt = dt
         self.phases = np.asarray(phases, dtype=float)
@@ -68,17 +68,15 @@ class LocalModelAgent:
         self.KiR = 0.1 * np.eye(3)
         self.g = 9.81
         self.e3 = np.array([0.0, 0.0, 1.0])
+        self.recon_alpha = recon_alpha               # reconstruction low-pass (tunable estimate)
         self.reset()
 
     def reset(self):
         self.intg_ep = np.zeros(3)
         self.intg_eR = np.zeros(3)
-        # Local lambda / derivative history for the analytic reconstruction.
-        self.prev_G_pinv = None
-        self.prev_Nmat = None
-        self.prev_w_d = None
+        # Local history for the low-pass reconstruction.
+        self.prev_f_lp = None
         self.prev_lam = LAM0.copy()
-        self.prev_prev_lam = LAM0.copy()
 
     def wrench_control(self, ep, eR, ev, ew, ang_vel):
         """Analytic PID -> desired 6-D load wrench w_d (kept from the classical law)."""
@@ -98,12 +96,12 @@ class LocalModelAgent:
         ep, eR, ev, ew = error_calculation(pL, vL, R, omega, t)
         w_d = self.wrench_control(ep, eR, ev, ew, omega)
 
-        # Optimizer-exact pR_dot from this drone's OWN previous lambda + load estimate.
-        lamdot_prev = (self.prev_lam - self.prev_prev_lam) / self.dt
-        vR, G_pinv, Nmat = reconstruct(R, vL, omega, w_d, self.prev_lam, lamdot_prev,
-                                       self.prev_G_pinv, self.prev_Nmat, self.prev_w_d,
-                                       self.Bb, self.L0, self.dt)
-        self._w_d, self._G_pinv, self._Nmat = w_d, G_pinv, Nmat
+        # Noise-robust pR_dot: low-pass the local base force from this drone's own view + lambda.
+        vR, f_lp, G_pinv, Nmat = reconstruct_lp(R, vL, omega, w_d, self.prev_lam,
+                                                self.prev_f_lp, self.Bb, self.L0,
+                                                self.dt, self.recon_alpha)
+        self._w_d, self._G_pinv, self._Nmat, self._f_lp = w_d, G_pinv, Nmat, f_lp
+        self._vR = vR                                   # stash for diagnostics (own pR_dot)
         return build_input(t, vR, self.prev_lam)
 
     def finalize(self, lam):
@@ -111,8 +109,8 @@ class LocalModelAgent:
         REUSING the G+/N built in prepare (f = G+ w_d + N lambda, no recompute). Rolls the
         local history forward. Returns the FULL (3n,) force; caller keeps its own slice."""
         f_full = self._G_pinv @ self._w_d + self._Nmat @ lam
-        self.prev_G_pinv, self.prev_Nmat, self.prev_w_d = self._G_pinv, self._Nmat, self._w_d
-        self.prev_prev_lam, self.prev_lam = self.prev_lam, lam.copy()
+        self.prev_f_lp = self._f_lp                     # roll filtered force
+        self.prev_lam = lam.copy()                      # roll lambda
         return f_full
 
 
@@ -126,7 +124,7 @@ class ResidualMARLEnv(ParallelEnv):
         step_size=0.01,
         end_time=25.0,
         load_inertia=0.01,
-        policy_path="il_actor_prdot_dagger.pt",   # frozen DAgger'd pR_dot policy each drone runs locally
+        policy_path="il_actor_prdot_dagger_analytic.pt",   # frozen DAgger'd pR_dot policy each drone runs locally
         # --- residual RL ---
         residual_scale=1.0,
         residual_cap=0.5,
@@ -135,6 +133,7 @@ class ResidualMARLEnv(ParallelEnv):
         # --- classical config ---
         epsilon=0.25,
         phases=(0.0, np.pi / 2, 0.0, np.pi / 2),
+        recon_tau=0.1,   # OUR estimate of the drone LLC time const, for reconstruct_lp (tunable; != plant)
         # --- sensing noise, per load channel (std; 0 => off) ---
         pos_noise=0.0, rot_noise=0.0, vel_noise=0.0, angvel_noise=0.0,
         noise_corr=0.0, own_noise=0.0, actuation_noise=0.0,
@@ -180,9 +179,10 @@ class ResidualMARLEnv(ParallelEnv):
         self.net.eval()
         self.obs_mean = ckpt["obs_mean"].astype(np.float32)   # (1, obs_dim)
         self.obs_std = ckpt["obs_std"].astype(np.float32)
+        self.recon_alpha = step_size / (recon_tau + step_size)   # reconstruction filter (tunable estimate)
         self.locals = [
             LocalModelAgent(self.n, self.dt, self.phases, self.epsilon, self.L0,
-                            self.mass, self.J, self.Bb)
+                            self.mass, self.J, self.Bb, self.recon_alpha)
             for _ in range(self.n)
         ]
 
@@ -360,7 +360,9 @@ class ResidualMARLEnv(ParallelEnv):
         observations = self._build_obs(obs42)
         terminations = {a: False for a in self.possible_agents}
         truncations = {a: truncated for a in self.possible_agents}
-        infos = {name: {"lambda": lam_own[i]} for i, name in enumerate(self.possible_agents)}
+        infos = {name: {"lambda": lam_own[i],
+                        "prdot_own": float(np.linalg.norm(self.locals[i]._vR[i]))}
+                 for i, name in enumerate(self.possible_agents)}
 
         if truncated:
             self.agents = []

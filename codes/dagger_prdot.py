@@ -34,7 +34,7 @@ from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from collect_prdot_data import reconstruct, build_input, LAM0
+from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX
 from deploy_prdot import main as deploy_prdot_main
 
 BYPASS_OPT = False   # adaptive optimizer (matches prdot_dataset.npz)
@@ -68,9 +68,8 @@ def rollout(policy, om, os_, beta):
     agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)   # fresh expert state
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
-    prev_G_pinv = prev_Nmat = prev_w_d = None
     prev_lam = LAM0.copy()          # APPLIED lambda_{t-1}
-    prev_prev_lam = LAM0.copy()     # APPLIED lambda_{t-2}
+    recon = Reconstructor(Bb, L0, DT)
 
     X_rows, Y_rows = [], []
     lam_pol_hist = [[] for _ in range(N)]
@@ -88,10 +87,8 @@ def rollout(policy, om, os_, beta):
         ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
 
-        # Policy input at the VISITED state: pR_dot from the APPLIED lambda_{t-1}.
-        lamdot_prev = (prev_lam - prev_prev_lam) / DT
-        vR, G_pinv, Nmat = reconstruct(R, vel, angvel, w_d, prev_lam, lamdot_prev,
-                                       prev_G_pinv, prev_Nmat, prev_w_d, Bb, L0, DT)
+        # Policy input at the VISITED state: pR_dot (mode set by ANALYTIC) from lambda_{t-1}.
+        vR = recon(R, vel, angvel, w_d, prev_lam)
         row = build_input(t, vR, prev_lam)
         Xn = ((row[None, :] - om) / os_).astype(np.float32)
         with torch.no_grad():
@@ -119,8 +116,8 @@ def rollout(policy, om, os_, beta):
         obs42, *_ = env.step(np.concatenate([ff, deriv]))
 
         # Roll histories with the APPLIED (mixed) lambda.
-        prev_G_pinv, prev_Nmat, prev_w_d = G_pinv, Nmat, w_d
-        prev_prev_lam, prev_lam = prev_lam, lam_mixed.copy()
+        recon.roll(lam_mixed)
+        prev_lam = lam_mixed.copy()
         t += DT
     env.close()
 
@@ -211,12 +208,12 @@ def show_diag(diag, label):
 
 def main():
     # Warm-start from the BC prdot policy and its dataset.
-    ckpt = torch.load("il_actor_prdot.pt", map_location="cpu", weights_only=False)
+    ckpt = torch.load(f"il_actor_prdot{SUFFIX}.pt", map_location="cpu", weights_only=False)
     policy = Actor(obs_dim=ckpt["obs_mean"].shape[1], act_dim=N)
     policy.load_state_dict(ckpt["state_dict"]); policy.eval()
     om, os_ = ckpt["obs_mean"].astype(np.float32), ckpt["obs_std"].astype(np.float32)
 
-    data = np.load("prdot_dataset.npz")
+    data = np.load(f"prdot_dataset{SUFFIX}.npz")
     D_X = data["X"].astype(np.float32)
     D_Y = data["Y"].astype(np.float32)
 
@@ -238,8 +235,8 @@ def main():
               f"dataset {len(D_X)}")
 
     torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},
-                "obs_mean": om, "obs_std": os_}, "il_actor_prdot_dagger.pt")
-    print("\nsaved il_actor_prdot_dagger.pt")
+                "obs_mean": om, "obs_std": os_}, f"il_actor_prdot_dagger{SUFFIX}.pt")
+    print(f"\nsaved il_actor_prdot_dagger{SUFFIX}.pt")
 
     plt.figure()
     plt.plot(range(1, len(buzz_curve) + 1), buzz_curve, "o-")
@@ -247,8 +244,8 @@ def main():
     plt.title("Closed-loop lambda buzz across DAgger"); plt.grid(True)
     plt.show()
 
-    print("\n--- deploy_prdot on il_actor_prdot_dagger.pt ---")
-    deploy_prdot_main("il_actor_prdot_dagger.pt")
+    print(f"\n--- deploy_prdot on il_actor_prdot_dagger{SUFFIX}.pt ---")
+    deploy_prdot_main(f"il_actor_prdot_dagger{SUFFIX}.pt")
 
 
 if __name__ == "__main__":

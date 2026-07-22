@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import TensorDataset, DataLoader
 
 from networks import Actor
+from collect_prdot_data import SUFFIX   # "" or "_analytic" (reconstruction mode)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 300
@@ -85,15 +86,15 @@ def fit(X, Y):
 
 
 def main():
-    d = np.load("prdot_dataset.npz")
+    d = np.load(f"prdot_dataset{SUFFIX}.npz")
     X, Y = d["X"], d["Y"]
     print(f"data: {len(X)} steps   X {X.shape}  Y {Y.shape}   Var(lambda)={Y.var():.4f}\n")
 
     net, xm, xs = fit(X, Y)
 
     torch.save({"state_dict": net.state_dict(), "obs_mean": xm, "obs_std": xs},
-               "il_actor_prdot.pt")
-    print("saved il_actor_prdot.pt  (pR_dot policy)")
+               f"il_actor_prdot{SUFFIX}.pt")
+    print(f"saved il_actor_prdot{SUFFIX}.pt  (pR_dot policy)")
     plt.show()
 
 

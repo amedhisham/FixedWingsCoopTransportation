@@ -24,7 +24,7 @@ from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from collect_prdot_data import reconstruct, build_input, LAM0
+from collect_prdot_data import Reconstructor, build_input, LAM0
 
 
 def load_policy(path="il_actor_prdot.pt"):
@@ -42,9 +42,8 @@ def main(policy_path="il_actor_prdot.pt"):
     agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)   # wrench controller only
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
-    prev_G_pinv = prev_Nmat = prev_w_d = None
     prev_lam = LAM0.copy()
-    prev_prev_lam = LAM0.copy()
+    recon = Reconstructor(Bb, L0, DT)
     t_hist, load_hist, ref_hist = [], [], []
     dpos = [[] for _ in range(N)]
     dvel = [[] for _ in range(N)]
@@ -60,9 +59,7 @@ def main(policy_path="il_actor_prdot.pt"):
         # Same input construction as collection.
         ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
-        lamdot_prev = (prev_lam - prev_prev_lam) / DT
-        vR, G_pinv, Nmat = reconstruct(R, vel, angvel, w_d, prev_lam, lamdot_prev,
-                                       prev_G_pinv, prev_Nmat, prev_w_d, Bb, L0, DT)
+        vR = recon(R, vel, angvel, w_d, prev_lam)
         X = ((build_input(t, vR, prev_lam)[None, :] - om) / os_).astype(np.float32)
         with torch.no_grad():
             lam = net(torch.tensor(X)).numpy().flatten()       # (N,)
@@ -82,8 +79,8 @@ def main(policy_path="il_actor_prdot.pt"):
         obs42, *_ = env.step(np.concatenate([ff, deriv]))
 
         # Roll histories.
-        prev_G_pinv, prev_Nmat, prev_w_d = G_pinv, Nmat, w_d
-        prev_prev_lam, prev_lam = prev_lam, lam.copy()
+        recon.roll(lam)
+        prev_lam = lam.copy()
         t += DT
     loop_time = time.perf_counter() - loop_t0
     env.close()

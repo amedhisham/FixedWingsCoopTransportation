@@ -32,10 +32,23 @@ from controller import error_calculation, get_reference_trajectory
 from collect_il_data import clock_features, read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 
 BYPASS_OPT = False   # adaptive optimizer (the real sweeping target)
-OUT = "prdot_dataset.npz"
+
+# Reconstruction mode toggle: False = low-pass (reconstruct_lp, the deployed base);
+# True = the original finite-difference `reconstruct`. Suffixes all outputs with
+# _analytic so both variants coexist. Drives the Reconstructor below, so the
+# collect/train/deploy/dagger loops stay mode-agnostic.
+ANALYTIC = True
+SUFFIX = "_analytic" if ANALYTIC else ""
+OUT = f"prdot_dataset{SUFFIX}.npz"
 
 # Optimizer's initial lambda (matches ClassicalAgent.reset's seed): A0*cos(xi0*0 + phases).
 LAM0 = 1.2 * np.cos(np.asarray(PHASES))
+
+# Reconstruction low-pass: OUR estimate of the drone LLC time const (MUST match the
+# env's recon_tau). Kills the finite-difference noise amplification; tau < plant's 0.2
+# trades a little jitter for less lag.
+RECON_TAU = 0.1
+RECON_ALPHA = DT / (RECON_TAU + DT)
 
 
 def reconstruct(R, vL, omega, w_d, lam_prev, lamdot_prev,
@@ -76,9 +89,76 @@ def reconstruct(R, vL, omega, w_d, lam_prev, lamdot_prev,
     return vR, G_pinv, Nmat
 
 
+def reconstruct_lp(R, vL, omega, w_d, lam_prev, prev_f_lp, Bb, L0, dt, alpha):
+    """Noise-robust reconstruct: low-pass the LOCAL base force, then differentiate.
+
+    Kills the finite-difference noise amplification of `reconstruct` (which divides
+    noisy w_d / lambda differences by dt -> x1/dt gain). Here the base force
+    f = G+ w_d + N*lambda_{t-1} is low-passed with the same LLC filter the plant uses,
+    and its SMOOTH derivative drives v_Ri. Fully local -- the base force needs only the
+    drone's own load view + own lambda, NO neighbour delta_f -- so it's decentralization-
+    legal. Returns v_R (n,3), the updated filtered force f_lp, and G+/N (for the caller's
+    force calc, so it isn't recomputed).
+    """
+    _, G_pinv, Nmat = calculate_grasp_and_nullspace(R, Bb, N)
+    f = G_pinv @ w_d + Nmat @ lam_prev                      # base force (all N)
+    if prev_f_lp is None:
+        f_lp = f.copy()
+        f_dot = np.zeros_like(f)
+    else:
+        f_lp = alpha * f + (1.0 - alpha) * prev_f_lp        # low-pass -> kills the noise
+        f_dot = (f_lp - prev_f_lp) / dt                     # derivative of a SMOOTH signal
+
+    vR = np.zeros((N, 3))
+    for i in range(N):
+        f_i = f_lp[3 * i: 3 * i + 3]
+        fd_i = f_dot[3 * i: 3 * i + 3]
+        T = np.sqrt(f_i @ f_i + 1e-6)
+        q = f_i / T
+        vLi = vL + R @ np.cross(omega, Bb[i])
+        Pi = np.eye(3) - np.outer(q, q)
+        vR[i] = vLi + (L0 / T) * Pi @ fd_i
+    return vR, f_lp, G_pinv, Nmat
+
+
 def build_input(t, vR, prev_lam):
     """The net's input row: [clock(14), pR_dot(n*3), lambda_{t-1}(n)]."""
     return np.concatenate([clock_features(t), vR.flatten(), prev_lam])
+
+
+class Reconstructor:
+    """Per-step pR_dot with internal state, so collect/deploy/dagger loops are identical
+    regardless of mode. ANALYTIC=True -> finite-difference `reconstruct` (needs prev G+/N/
+    w_d + lambda_dot); ANALYTIC=False -> `reconstruct_lp` (needs prev filtered force).
+
+    Usage:  vR = recon(R, vL, omega, w_d, lam_prev);  ... ;  recon.roll(lam_applied)
+    """
+
+    def __init__(self, Bb, L0, dt):
+        self.Bb, self.L0, self.dt = Bb, L0, dt
+        self.prev_G = self.prev_N = self.prev_wd = None      # analytic history
+        self.prev_prev_lam = LAM0.copy()                     # analytic lambda_{t-2}
+        self.prev_f_lp = None                                # lp history
+
+    def __call__(self, R, vL, omega, w_d, lam_prev):
+        if ANALYTIC:
+            lamdot = (lam_prev - self.prev_prev_lam) / self.dt
+            vR, G, Nm = reconstruct(R, vL, omega, w_d, lam_prev, lamdot,
+                                    self.prev_G, self.prev_N, self.prev_wd, self.Bb, self.L0, self.dt)
+            self._G, self._N, self._wd, self._lam_prev = G, Nm, w_d, lam_prev
+        else:
+            vR, f_lp, _, _ = reconstruct_lp(R, vL, omega, w_d, lam_prev, self.prev_f_lp,
+                                            self.Bb, self.L0, self.dt, RECON_ALPHA)
+            self._f_lp = f_lp
+        return vR
+
+    def roll(self, lam_applied):
+        """Advance the internal history with the lambda that was actually applied."""
+        if ANALYTIC:
+            self.prev_G, self.prev_N, self.prev_wd = self._G, self._N, self._wd
+            self.prev_prev_lam = self._lam_prev
+        else:
+            self.prev_f_lp = self._f_lp
 
 
 def collect():
@@ -88,9 +168,8 @@ def collect():
     agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
 
     prev_f = np.array([0.0, 0.0, FZ] * N)           # applied force (for plant filtering only)
-    prev_G_pinv = prev_Nmat = prev_w_d = None       # reconstruct's derivative history
     prev_lam = LAM0.copy()                          # lambda_{t-1}
-    prev_prev_lam = LAM0.copy()                     # lambda_{t-2}  (for lambda_dot)
+    recon = Reconstructor(Bb, L0, DT)
     X_rows, Y_rows = [], []
 
     # Histories for the diagnostic plots.
@@ -110,10 +189,8 @@ def collect():
         ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
 
-        # Input: optimizer-exact pR_dot from lambda_{t-1} + current load state.
-        lamdot_prev = (prev_lam - prev_prev_lam) / DT
-        vR, G_pinv, Nmat = reconstruct(R, vel, angvel, w_d, prev_lam, lamdot_prev,
-                                       prev_G_pinv, prev_Nmat, prev_w_d, Bb, L0, DT)
+        # Input: pR_dot (mode set by ANALYTIC) from lambda_{t-1} + current load state.
+        vR = recon(R, vel, angvel, w_d, prev_lam)
         X_rows.append(build_input(t, vR, prev_lam))
 
         # Target: the optimizer's full lambda vector (same w_d, so no double integration).
@@ -138,8 +215,8 @@ def collect():
         obs42, *_ = env.step(np.concatenate([ff, deriv]))
 
         # Roll histories.
-        prev_G_pinv, prev_Nmat, prev_w_d = G_pinv, Nmat, w_d
-        prev_prev_lam, prev_lam = prev_lam, lam.copy()
+        recon.roll(lam)
+        prev_lam = lam.copy()
         t += DT
     env.close()
 
