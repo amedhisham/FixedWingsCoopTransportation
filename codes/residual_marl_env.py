@@ -127,9 +127,13 @@ class ResidualMARLEnv(ParallelEnv):
         policy_path="il_actor_prdot_dagger_analytic.pt",   # frozen DAgger'd pR_dot policy each drone runs locally
         # --- residual RL ---
         residual_scale=1.0,
-        residual_cap=0.5,
-        # --- reward weights ---
-        w_p=1.0, w_R=1.0, w_df=0.01,
+        residual_cap=0.5,          # proportional cap (used only if residual_cap_abs is None)
+        residual_cap_abs=2.0,      # ABSOLUTE residual cap in N -> constant authority even at tension collapse
+        # --- reward weights (manifold-tracking; see expert_reference.py) ---
+        manifold_w=1.0,    # distance to the expert loiter loop (the main objective)
+        stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing stall)
+        load_w=10.0,       # load-tracking guardrail (keep what the base already does)
+        expert_ref="expert_ref.npz",
         # --- classical config ---
         epsilon=0.25,
         phases=(0.0, np.pi / 2, 0.0, np.pi / 2),
@@ -145,7 +149,9 @@ class ResidualMARLEnv(ParallelEnv):
         self.end_time = end_time
         self.residual_scale = residual_scale
         self.residual_cap = residual_cap
-        self.w_p, self.w_R, self.w_df = w_p, w_R, w_df
+        self.residual_cap_abs = residual_cap_abs
+        self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
+        self.expert_pos = np.load(expert_ref)["dpos"]   # (n, T, 3) per-drone reference loiter path
         self.epsilon = epsilon
         self.phases = np.asarray(phases, dtype=float)
         self.pos_noise = pos_noise
@@ -190,8 +196,9 @@ class ResidualMARLEnv(ParallelEnv):
         self.llc_alpha = step_size / (0.2 + step_size)
         self._Fz = self.mass * 9.81 / self.n
 
-        # obs = load estimate(18) + own drone state(6) = 24 ; action = delta_f(3).
-        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(24,), dtype=np.float32)
+        # obs = load estimate(18) + own drone(6) + own f_g(3) + own f_lambda(3) = 30 ;
+        # action = delta_f(3).  f_g/f_lambda expose the base's own force decomposition.
+        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30,), dtype=np.float32)
         self._act_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
@@ -273,7 +280,8 @@ class ResidualMARLEnv(ParallelEnv):
             own = np.concatenate([dpos, dvel])
             if self.own_noise > 0:
                 own = own + self.np_random.normal(0, self.own_noise, own.shape)
-            out[name] = np.concatenate([load18, own]).astype(np.float32)
+            # + base force decomposition slices (one-step lag): what the base is commanding.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i]]).astype(np.float32)
         return out
 
     # ---- PettingZoo API ----
@@ -293,6 +301,8 @@ class ResidualMARLEnv(ParallelEnv):
         self._noise_rot = np.zeros((self.n, 3, 3))
         self._obs42 = obs42
         self._prev_f = np.array([0.0, 0.0, self._Fz] * self.n)
+        self._fg = np.zeros((self.n, 3))          # base load-serving force slice (obs, one-step lag)
+        self._flam = np.zeros((self.n, 3))         # base nullspace force slice
         self.agents = list(self.possible_agents)
 
         self._update_estimates(obs42)
@@ -319,8 +329,11 @@ class ResidualMARLEnv(ParallelEnv):
         lam_own = np.zeros(self.n)
         for i, lm in enumerate(self.locals):
             f_full = lm.finalize(lams[i])
-            f_base[3 * i: 3 * i + 3] = f_full[3 * i: 3 * i + 3]
+            sl = slice(3 * i, 3 * i + 3)
+            f_base[sl] = f_full[sl]
             lam_own[i] = lams[i][i]
+            self._fg[i] = (lm._G_pinv @ lm._w_d)[sl]      # own load-serving slice (for next obs)
+            self._flam[i] = f_full[sl] - self._fg[i]      # own nullspace slice
 
         # --- 2. Residual RL: add the (norm-capped) per-agent action. ---
         f_cmd = f_base.copy()
@@ -328,8 +341,8 @@ class ResidualMARLEnv(ParallelEnv):
         for i, name in enumerate(self.possible_agents):
             base_i = f_base[3 * i: 3 * i + 3]
             df = np.asarray(actions[name], dtype=float) * self.residual_scale
-            if self.residual_cap:
-                max_res = self.residual_cap * np.linalg.norm(base_i)
+            max_res = self.residual_cap_abs if self.residual_cap_abs else self.residual_cap * np.linalg.norm(base_i)
+            if max_res:
                 nrm = np.linalg.norm(df)
                 if nrm > max_res and nrm > 0:
                     df *= max_res / nrm
@@ -348,12 +361,20 @@ class ResidualMARLEnv(ParallelEnv):
         self.t += self.dt
         self._obs42 = obs42
 
-        # --- 5. Reward from the TRUE (noise-free) new load state. ---
+        # --- 5. Reward (TRUE state): stay on the expert loiter loop + don't stall + load
+        #        guardrail. Manifold term = squared distance to the NEAREST point on the
+        #        expert path (phase-free); stall = one-sided floor below epsilon. ---
         npos, nR, nvel, nw = self._unpack_load(obs42)
-        ep, eR, _, _ = error_calculation(npos, nvel, nR, nw, self.t)
-        track = self.w_p * float(ep @ ep) + self.w_R * float(eR @ eR)
-        rewards = {name: -track - self.w_df * float(delta_f[name] @ delta_f[name])
-                   for name in self.possible_agents}
+        ep, _, _, _ = error_calculation(npos, nvel, nR, nw, self.t)
+        load_err2 = float(ep @ ep)
+        rewards, loop_d = {}, {}
+        for i, name in enumerate(self.possible_agents):
+            p_i = obs42[18 + 3 * i: 18 + 3 * i + 3]
+            v_i = float(np.linalg.norm(obs42[18 + 3 * self.n + 3 * i: 18 + 3 * self.n + 3 * i + 3]))
+            d2 = float(np.min(np.sum((self.expert_pos[i] - p_i) ** 2, axis=1)))   # nearest-point^2
+            stall = max(0.0, self.epsilon - v_i) ** 2
+            rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall + self.load_w * load_err2)
+            loop_d[name] = d2 ** 0.5
 
         # --- 6. Sense the new state and package outputs. ---
         self._update_estimates(obs42)
@@ -361,7 +382,8 @@ class ResidualMARLEnv(ParallelEnv):
         terminations = {a: False for a in self.possible_agents}
         truncations = {a: truncated for a in self.possible_agents}
         infos = {name: {"lambda": lam_own[i],
-                        "prdot_own": float(np.linalg.norm(self.locals[i]._vR[i]))}
+                        "prdot_own": float(np.linalg.norm(self.locals[i]._vR[i])),
+                        "loop_dist": loop_d[name]}
                  for i, name in enumerate(self.possible_agents)}
 
         if truncated:

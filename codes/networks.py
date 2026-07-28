@@ -34,3 +34,20 @@ class Actor(nn.Module):
     def distribution(self, obs):
         """Gaussian policy for RL: Normal(mean, exp(log_std))."""
         return torch.distributions.Normal(self.forward(obs), self.log_std.exp())
+
+
+class Critic(nn.Module):
+    """Centralized value network for MAPPO/CTDE — takes the GLOBAL true state (privileged,
+    training-only) and predicts the scalar team return. Deployment uses only the Actor."""
+
+    def __init__(self, state_dim, hidden=(128, 128)):
+        super().__init__()
+        layers, last = [], state_dim
+        for h in hidden:
+            layers += [nn.Linear(last, h), nn.Tanh()]
+            last = h
+        layers += [nn.Linear(last, 1)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, state):
+        return self.net(state).squeeze(-1)
