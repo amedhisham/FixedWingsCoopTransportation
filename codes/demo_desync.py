@@ -25,7 +25,13 @@ N = 4
 EPSILON = 0.25
 DESYNC_ON = True   # set False to see ONLY the coherent (no-noise, no-delay) baseline
 COMPARE = False     # when desync is on, overlay a coherent run so degradation is obvious
-POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate; None -> just base-only desync
+POLICY_PATH = "residual_mappo_last.pt"   # trained residual to evaluate; None -> just base-only desync
+                                         #   (_last = latest, saved on Ctrl+C; _fixed = fixed-scenario best)
+
+# --- held-out generalization test: eval the trained policy on a scenario it NEVER trained on
+#     (different noise seed + different delay assignment, same {1,2} range & noise levels). ---
+GEN_SEED = 8888                     # != training FIXED_SEED(12345) and != training-eval EVAL_SEED(4242)
+GEN_DELAYS = [2, 1, 1, 2]           # permuted delay assignment (trained on [1,2,2,1])
 
 # Every disturbance knob is exposed here (all-zero == coherent baseline).
 # Note: with ZERO residual actions, own_noise has no visible effect (no policy is
@@ -45,7 +51,7 @@ DESYNC = dict(
 
 def load_policy(path):
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    actor = Actor(obs_dim=30, act_dim=3)
+    actor = Actor(obs_dim=ck["obs_dim"], act_dim=ck["act_dim"])
     actor.load_state_dict(ck["state_dict"]); actor.eval()
     return actor, ck["obs_mean"].astype(np.float32), ck["obs_std"].astype(np.float32)
 
@@ -58,7 +64,7 @@ def run_episode(policy=None, seed=None, **kwargs):
     obs, _ = env.reset(seed=seed)
     agents = env.possible_agents
 
-    t_hist, load_hist, ref_hist = [], [], []
+    t_hist, load_hist, ref_hist, swing_hist = [], [], [], []
     dpos = [[] for _ in range(N)]
     dvel = [[] for _ in range(N)]
 
@@ -67,12 +73,14 @@ def run_episode(policy=None, seed=None, **kwargs):
         s = env.state()                       # global 42-D state at current t
         t_hist.append(t)
         load_hist.append(s[0:3].copy())
-        ref_hist.append(get_reference_trajectory(t)[0].copy())
+        ref_p, ref_v, _, _ = get_reference_trajectory(t)
+        ref_hist.append(ref_p.copy())
+        swing_hist.append(np.linalg.norm(s[12:15] - ref_v))   # load velocity error = SWING rate
         for i in range(N):
             dpos[i].append(s[18 + 3 * i: 18 + 3 * i + 3].copy())
             dvel[i].append(np.linalg.norm(s[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
         if policy is None:
-            act = {a: np.zeros(3, dtype=np.float32) for a in agents}
+            act = {a: np.zeros(env._act_space.shape[0], dtype=np.float32) for a in agents}
         else:
             actor, om, os_ = policy
             oa = np.stack([obs[a] for a in agents]).astype(np.float32)
@@ -86,6 +94,7 @@ def run_episode(policy=None, seed=None, **kwargs):
     env.close()
     return dict(
         t=np.array(t_hist), load=np.array(load_hist), ref=np.array(ref_hist),
+        swing=np.array(swing_hist),
         dpos=[np.array(p) for p in dpos], dvel=[np.array(v) for v in dvel],
     )
 
@@ -94,10 +103,11 @@ if __name__ == "__main__":
     pol = load_policy(POLICY_PATH) if (POLICY_PATH and os.path.exists(POLICY_PATH)) else None
     if POLICY_PATH and pol is None:
         print(f"[warn] {POLICY_PATH} not found -> showing base-only desync")
-    if pol is not None:                     # trained residual vs base-only on the EXACT training scenario
-        cfg = dict(TRAIN_DESYNC, ctrl_delay=FIXED_DELAYS)
-        des = run_episode(policy=pol, seed=FIXED_SEED, **cfg)
-        coh = run_episode(seed=FIXED_SEED, **cfg)
+    if pol is not None:                     # trained residual vs base-only on a HELD-OUT scenario
+        cfg = dict(TRAIN_DESYNC, ctrl_delay=GEN_DELAYS)   # different delays + seed than training
+        des = run_episode(policy=pol, seed=GEN_SEED, **cfg)
+        coh = run_episode(seed=GEN_SEED, **cfg)
+        print(f"[held-out] seed={GEN_SEED} delays={GEN_DELAYS}  (trained on seed={FIXED_SEED} delays={FIXED_DELAYS})")
         lbl_des, lbl_coh = "trained residual", "base (no residual)"
     elif DESYNC_ON:
         des = run_episode(**DESYNC)
@@ -140,6 +150,17 @@ if __name__ == "__main__":
         plt.plot(coh["t"], np.linalg.norm(coh["load"] - coh["ref"], axis=1), "r", alpha=0.7, label=lbl_coh)
     plt.xlabel("Time (s)"); plt.ylabel("||load - reference|| (m)")
     plt.title("Load tracking error"); plt.legend(); plt.grid(True)
+
+    # 3b. Load SWING = velocity-error norm over time (what the swing reward targets).
+    plt.figure()
+    plt.plot(des["t"], des["swing"], "b", label=lbl_des)
+    if coh is not None:
+        plt.plot(coh["t"], coh["swing"], "r", alpha=0.7, label=lbl_coh)
+    print(f"{lbl_des:20s}: mean swing {des['swing'].mean():.4f}   max {des['swing'].max():.4f} m/s")
+    if coh is not None:
+        print(f"{lbl_coh:20s}: mean swing {coh['swing'].mean():.4f}   max {coh['swing'].max():.4f} m/s")
+    plt.xlabel("Time (s)"); plt.ylabel("||load vel - ref vel|| (m/s)")
+    plt.title("Load swing (velocity error)"); plt.legend(); plt.grid(True)
 
     # 4. Drone XY trajectories (trained solid) overlaid on the EXPERT loiter loop (faded).
     try:

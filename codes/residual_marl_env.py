@@ -8,8 +8,9 @@ a fully-local replica of the whole system built from the frozen pR_dot policy pl
 kinematic reconstruction of the carriers. Per step, for each drone i (on its OWN,
 possibly desynced, load view and offset clock):
 
-    f_base_i  = slice_i( LocalModelAgent_i.compute_forces( its own load view ) )
-    delta_f_i = action_i * residual_scale            # residual RL (optionally capped)
+    f_base_i  = slice_i( G+ w_d + N lambda )         # LocalModelAgent_i, its own load view
+    action_i  = [ delta_lambda(n) , delta_wrench(6) ]                 # TWO-HEAD residual RL
+    delta_f_i = slice_i( G+ @ delta_wrench + N @ delta_lambda )       # range fixes load, null fixes traj
     f_cmd_i   = f_base_i + delta_f_i
     -> LLC filter -> plant.step()
 
@@ -37,6 +38,7 @@ from fmu_plant_env import FMUPlantEnv
 from controller import error_calculation
 from networks import Actor
 from collect_prdot_data import reconstruct_lp, build_input, LAM0
+from collect_il_data import clock_features
 
 
 class LocalModelAgent:
@@ -125,14 +127,28 @@ class ResidualMARLEnv(ParallelEnv):
         end_time=25.0,
         load_inertia=0.01,
         policy_path="il_actor_prdot_dagger_analytic.pt",   # frozen DAgger'd pR_dot policy each drone runs locally
-        # --- residual RL ---
-        residual_scale=1.0,
-        residual_cap=0.5,          # proportional cap (used only if residual_cap_abs is None)
-        residual_cap_abs=2.0,      # ABSOLUTE residual cap in N -> constant authority even at tension collapse
+        # --- residual RL (TWO-HEAD: action = [delta_lambda(n), delta_wrench(6)]) ---
+        #   delta_lambda enters via N   -> nullspace -> reshapes drone trajectory, load-neutral.
+        #   delta_wrench  enters via G+ -> range     -> trims the desired wrench, fixes load.
+        #   Built in force space as [G+ @ dw + N @ dlam] so the two subspaces stay clean.
+        cap_lam=0.4,       # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.74N/drone nullspace
+                           #   force (base null slice ~1.85N). Authority to reshape the loop; the blowup
+                           #   guard (not this cap) prevents crashes, so this is set for AUTHORITY.
+        cap_w=0.2,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
+                           #   (G+ gain ~0.25). Raised from 0.12 to give delta_wrench muscle to act on the
+                           #   swing term below (a louder reward into a capped actuator does nothing).
+        blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
+        blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
-        manifold_w=1.0,    # distance to the expert loiter loop (the main objective)
-        stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing stall)
-        load_w=10.0,       # load-tracking guardrail (keep what the base already does)
+        manifold_w=1.0,    # distance to the expert loiter loop (the main objective) -> served by delta_lambda
+        stall_w=300.0,     # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL — hard constraint).
+                           #   50 was too weak (swing term outbid it -> drones slowed below stall). One-sided
+                           #   so a big weight only enforces "stay above epsilon", never distorts above it.
+        load_w=10.0,       # load-tracking. Back to moderate: it no longer has to bully one actuator —
+                           #   delta_wrench is its dedicated knob, so tracking (delta_lambda) is conflict-free.
+        swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping signal. TEMPORARILY OFF: it was bribing the
+                           #   policy to slow the formation (less load motion) -> drones dropped below stall.
+                           #   Isolate the stall fix first; reintroduce a SMALL swing_w once airspeed is solid.
         expert_ref="expert_ref.npz",
         # --- classical config ---
         epsilon=0.25,
@@ -147,10 +163,12 @@ class ResidualMARLEnv(ParallelEnv):
         self.n = n_carriers
         self.dt = step_size
         self.end_time = end_time
-        self.residual_scale = residual_scale
-        self.residual_cap = residual_cap
-        self.residual_cap_abs = residual_cap_abs
+        self.cap_lam = cap_lam
+        self.cap_w = cap_w
+        self.blowup_v = blowup_v
+        self.blowup_penalty = blowup_penalty
         self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
+        self.swing_w = swing_w
         self.expert_pos = np.load(expert_ref)["dpos"]   # (n, T, 3) per-drone reference loiter path
         self.epsilon = epsilon
         self.phases = np.asarray(phases, dtype=float)
@@ -196,10 +214,11 @@ class ResidualMARLEnv(ParallelEnv):
         self.llc_alpha = step_size / (0.2 + step_size)
         self._Fz = self.mass * 9.81 / self.n
 
-        # obs = load estimate(18) + own drone(6) + own f_g(3) + own f_lambda(3) = 30 ;
-        # action = delta_f(3).  f_g/f_lambda expose the base's own force decomposition.
-        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30,), dtype=np.float32)
-        self._act_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
+        # obs = load est(18) + own drone(6) + own f_g(3) + own f_lambda(3) + clock(14) = 44 ;
+        # action = [delta_lambda(n), delta_wrench(6)].  clock features = loiter PHASE (zero-comms).
+        self._clock_dim = clock_features(0.0).shape[0]
+        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30 + self._clock_dim,), dtype=np.float32)
+        self._act_space = spaces.Box(-1.0, 1.0, shape=(self.n + 6,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
         self.t = 0.0
@@ -225,6 +244,14 @@ class ResidualMARLEnv(ParallelEnv):
         if arr.size == 1:
             arr = np.full(self.n, arr.item())
         return arr
+
+    @staticmethod
+    def _clip_norm(v, max_norm):
+        """Scale v so ||v|| <= max_norm (no-op if already inside or max_norm<=0)."""
+        if max_norm <= 0:
+            return v
+        nrm = np.linalg.norm(v)
+        return v * (max_norm / nrm) if nrm > max_norm else v
 
     def _unpack_load(self, obs42):
         pos = obs42[0:3]
@@ -280,8 +307,9 @@ class ResidualMARLEnv(ParallelEnv):
             own = np.concatenate([dpos, dvel])
             if self.own_noise > 0:
                 own = own + self.np_random.normal(0, self.own_noise, own.shape)
-            # + base force decomposition slices (one-step lag): what the base is commanding.
-            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i]]).astype(np.float32)
+            clk = clock_features(self.t + self.clock_offset[i])   # loiter PHASE (per-drone clock)
+            # + base force decomposition slices (one-step lag) + clock phase.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk]).astype(np.float32)
         return out
 
     # ---- PettingZoo API ----
@@ -294,6 +322,7 @@ class ResidualMARLEnv(ParallelEnv):
             lm.reset()
 
         self.t = 0.0
+        self._step = 0
         self._state_buffer = deque(maxlen=int(self.ctrl_delay.max()) + 1)
         self._noise_pos = np.zeros((self.n, 3))
         self._noise_vel = np.zeros((self.n, 3))
@@ -335,18 +364,19 @@ class ResidualMARLEnv(ParallelEnv):
             self._fg[i] = (lm._G_pinv @ lm._w_d)[sl]      # own load-serving slice (for next obs)
             self._flam[i] = f_full[sl] - self._fg[i]      # own nullspace slice
 
-        # --- 2. Residual RL: add the (norm-capped) per-agent action. ---
+        # --- 2. Residual RL (two-head): action = [delta_lambda(n), delta_wrench(6)]. Build the
+        #        residual in force space as [G+ @ dw + N @ dlam] using THIS drone's own G+/N, so
+        #        dlam lives in its nullspace (load-neutral) and dw in its range (load-correcting).
+        #        f_eff = G+(w_d+dw) + N(lam+dlam) = f_base + [G+ dw + N dlam]; keep own slice. ---
         f_cmd = f_base.copy()
         delta_f = {}
         for i, name in enumerate(self.possible_agents):
-            base_i = f_base[3 * i: 3 * i + 3]
-            df = np.asarray(actions[name], dtype=float) * self.residual_scale
-            max_res = self.residual_cap_abs if self.residual_cap_abs else self.residual_cap * np.linalg.norm(base_i)
-            if max_res:
-                nrm = np.linalg.norm(df)
-                if nrm > max_res and nrm > 0:
-                    df *= max_res / nrm
-            f_cmd[3 * i: 3 * i + 3] = base_i + df
+            a = np.asarray(actions[name], dtype=float)
+            dlam = self._clip_norm(a[:self.n],        self.cap_lam * np.linalg.norm(lams[i]))
+            dw   = self._clip_norm(a[self.n:self.n+6], self.cap_w   * np.linalg.norm(self.locals[i]._w_d))
+            df_full = self.locals[i]._G_pinv @ dw + self.locals[i]._Nmat @ dlam   # (3n,)
+            df = df_full[3 * i: 3 * i + 3]
+            f_cmd[3 * i: 3 * i + 3] = f_base[3 * i: 3 * i + 3] + df
             delta_f[name] = df
 
         # --- 3. Actuation noise (optional). ---
@@ -359,21 +389,43 @@ class ResidualMARLEnv(ParallelEnv):
         self._prev_f = ff.copy()
         obs42, _, _, truncated, _ = self.plant.step(np.concatenate([ff, deriv]))
         self.t += self.dt
+        self._step += 1
+
+        # --- 4b. Blowup guard: a bad exploration action can collapse tension -> velocity
+        #        explodes -> NaN state -> the NEXT step's reconstruct SVD throws and kills the
+        #        whole run. Catch it here: truncate cleanly with a penalty (no crash), which also
+        #        teaches the policy to avoid it. Return BEFORE anything touches the bad state. ---
+        finite = np.isfinite(obs42).all()
+        vmax = np.max(np.abs(obs42[18 + 3 * self.n: 18 + 6 * self.n])) if finite else np.inf
+        if (not finite) or vmax > self.blowup_v:
+            self.agents = []
+            zeros = {a: np.zeros(self._obs_space.shape[0], np.float32) for a in self.possible_agents}
+            pen = {a: -self.blowup_penalty for a in self.possible_agents}
+            term = {a: False for a in self.possible_agents}
+            trunc = {a: True for a in self.possible_agents}
+            info = {a: {"lambda": 0.0, "prdot_own": 0.0, "loop_dist": 5.0,
+                        "load_err": 5.0, "load_verr": 5.0, "blowup": True}
+                    for a in self.possible_agents}
+            return zeros, pen, term, trunc, info
+
         self._obs42 = obs42
 
-        # --- 5. Reward (TRUE state): stay on the expert loiter loop + don't stall + load
-        #        guardrail. Manifold term = squared distance to the NEAREST point on the
-        #        expert path (phase-free); stall = one-sided floor below epsilon. ---
+        # --- 5. Reward (TRUE state): TIME-INDEXED tracking of the expert loiter + don't stall
+        #        + load guardrail. Track term = squared distance to the PHASE-CORRECT expert
+        #        point p_i^central(t) (the clock in obs makes this achievable); stall = floor. ---
         npos, nR, nvel, nw = self._unpack_load(obs42)
-        ep, _, _, _ = error_calculation(npos, nvel, nR, nw, self.t)
+        ep, _, ev, _ = error_calculation(npos, nvel, nR, nw, self.t)
         load_err2 = float(ep @ ep)
+        swing2 = float(ev @ ev)          # load velocity-error -> damping/smoothness signal (global)
+        idx = min(self._step, self.expert_pos.shape[1] - 1)   # current step -> phase-correct expert point
         rewards, loop_d = {}, {}
         for i, name in enumerate(self.possible_agents):
             p_i = obs42[18 + 3 * i: 18 + 3 * i + 3]
             v_i = float(np.linalg.norm(obs42[18 + 3 * self.n + 3 * i: 18 + 3 * self.n + 3 * i + 3]))
-            d2 = float(np.min(np.sum((self.expert_pos[i] - p_i) ** 2, axis=1)))   # nearest-point^2
+            d2 = float(np.sum((self.expert_pos[i][idx] - p_i) ** 2))   # TIME-INDEXED target
             stall = max(0.0, self.epsilon - v_i) ** 2
-            rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall + self.load_w * load_err2)
+            rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall
+                              + self.load_w * load_err2 + self.swing_w * swing2)
             loop_d[name] = d2 ** 0.5
 
         # --- 6. Sense the new state and package outputs. ---
@@ -381,9 +433,13 @@ class ResidualMARLEnv(ParallelEnv):
         observations = self._build_obs(obs42)
         terminations = {a: False for a in self.possible_agents}
         truncations = {a: truncated for a in self.possible_agents}
+        load_err = load_err2 ** 0.5
+        load_verr = swing2 ** 0.5          # load velocity-error norm = the SWING rate (for eval/demo)
         infos = {name: {"lambda": lam_own[i],
                         "prdot_own": float(np.linalg.norm(self.locals[i]._vR[i])),
-                        "loop_dist": loop_d[name]}
+                        "loop_dist": loop_d[name],
+                        "load_err": load_err,
+                        "load_verr": load_verr}
                  for i, name in enumerate(self.possible_agents)}
 
         if truncated:

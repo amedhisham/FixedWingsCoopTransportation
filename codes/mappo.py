@@ -31,13 +31,19 @@ DELAY_CHOICES = (1, 2)
 # DIAGNOSTIC: False = FIX one desync realization (deterministic env) to test whether the
 # policy can overfit a SINGLE case at all. True = per-episode domain randomization (needs a
 # big batch to average out draw variance -- that's what drowned the first run).
-DOMAIN_RANDOMIZE = False
+DOMAIN_RANDOMIZE = True
 FIXED_DELAYS = [1, 2, 2, 1]
 FIXED_SEED = 12345
+# Held-out deterministic eval scenario: a DIFFERENT seed than FIXED_SEED so DET_loop/DET_load
+# score a case we did NOT overfit during the fixed-scenario pretrain.
+EVAL_SEED = 4242
+EVAL_DELAYS = [1, 2, 2, 1]
 
 # --- PPO hyperparameters ---
-ITERS = 200                  # DET_loop was still descending at 60 -> run longer to find the plateau
-STEPS_PER_ITER = 2500        # 1 episode / update (bump to 6000+ later for lower-variance updates)
+ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
+                             #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
+STEPS_PER_ITER = 20000       # ~8 episodes / update. Domain randomization adds per-SCENARIO draw variance
+                             #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
 EPOCHS = 10
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
@@ -49,10 +55,11 @@ LR_CRITIC = 1e-3
 ENT_COEF = 0.0
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
-EVAL_EVERY = 3               # every N iters, eval the DETERMINISTIC (mean-action) policy -> true loop_dist
+EVAL_EVERY = 2               # every N iters, eval the DETERMINISTIC (mean-action) policy -> true loop_dist
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_warmstart.pt"  # init actor (+ its obs normalization); None = fresh (warm-start won)
+WARMSTART = "residual_mappo_last.pt"  # warm-start the randomization run from the fixed-scenario best
+                                       #   (actor + its obs normalization + critic if present)
 
 
 def compute_gae(rew, val, done, gamma, lam):
@@ -70,20 +77,41 @@ def compute_gae(rew, val, done, gamma, lam):
     return adv, ret
 
 
-def eval_policy(env, actor, om, os_):
-    """Deterministic (mean-action, no sampling) rollout on the FIXED scenario -> the TRUE mean
-    loop_dist, free of exploration noise. Uses actor.forward (the mean), not .distribution."""
+def estimate_norm(env, rng, n_steps=2500):
+    """Roll random actions on the fixed scenario to estimate obs mean/std. The 44-D obs spans
+    very different scales (positions ~10, velocities ~40, clock ~1) -> normalization matters."""
     env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)
     obs, _ = env.reset(seed=FIXED_SEED)
     agents = env.possible_agents
-    loops = []
+    ad = env._act_space.shape[0]
+    buf, steps = [], 0
+    while steps < n_steps and env.agents:
+        acts = {a: rng.normal(0, 0.3, size=ad).astype(np.float32) for a in agents}
+        obs, *_ = env.step(acts)
+        for a in agents:
+            buf.append(obs[a])
+        steps += 1
+    arr = np.asarray(buf, dtype=np.float32)
+    return arr.mean(0, keepdims=True), (arr.std(0, keepdims=True) + 1e-6).astype(np.float32)
+
+
+def eval_policy(env, actor, om, os_):
+    """Deterministic (mean-action, no sampling) rollout on a HELD-OUT scenario (EVAL_SEED, distinct
+    from the training FIXED_SEED so we don't score the seed we overfit) -> the TRUE mean loop_dist
+    AND mean load-tracking error, free of exploration noise. Uses actor.forward (the mean)."""
+    env.ctrl_delay = np.asarray(EVAL_DELAYS, dtype=int)
+    obs, _ = env.reset(seed=EVAL_SEED)
+    agents = env.possible_agents
+    loops, loads, swings = [], [], []
     while env.agents:
         oa = np.stack([obs[a] for a in agents]).astype(np.float32)
         with torch.no_grad():
             mean = actor(torch.tensor(((oa - om) / os_).astype(np.float32), device=DEVICE)).cpu().numpy()
         obs, _, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
         loops.append(np.mean([infos[a]["loop_dist"] for a in agents]))
-    return float(np.mean(loops))
+        loads.append(infos[agents[0]]["load_err"])          # load pos error is global (same for all drones)
+        swings.append(infos[agents[0]]["load_verr"])        # load VELOCITY error = swing rate
+    return float(np.mean(loops)), float(np.mean(loads)), float(np.max(loads)), float(np.mean(swings))
 
 
 def collect(env, actor, critic, n_steps, rng, om, os_):
@@ -92,6 +120,7 @@ def collect(env, actor, critic, n_steps, rng, om, os_):
     obs_b, act_b, logp_b = [], [], []      # per step, shape (N, .)
     state_b, val_b, rew_b, done_b = [], [], [], []
     ep_rews, ep_loops = [], []
+    n_blowups = 0                          # episodes the guard truncated (state diverged)
 
     agents = env.possible_agents
     steps = 0
@@ -125,6 +154,8 @@ def collect(env, actor, critic, n_steps, rng, om, os_):
 
             ep_r += float(r_vec.sum())                                        # report RAW team
             ep_loop.append(np.mean([infos[a]["loop_dist"] for a in agents]))
+            if infos[agents[0]].get("blowup"):
+                n_blowups += 1                                                # guard fired (state diverged)
             obs = nobs
             steps += 1
         ep_rews.append(ep_r); ep_loops.append(np.mean(ep_loop))
@@ -132,7 +163,7 @@ def collect(env, actor, critic, n_steps, rng, om, os_):
     return (np.array(obs_b), np.array(act_b), np.array(logp_b),
             np.array(state_b, dtype=np.float32), np.array(val_b, dtype=np.float32),
             np.array(rew_b, dtype=np.float32), np.array(done_b, dtype=np.float32),
-            np.mean(ep_rews), np.mean(ep_loops))
+            np.mean(ep_rews), np.mean(ep_loops), n_blowups)
 
 
 def main():
@@ -143,16 +174,24 @@ def main():
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
     state_dim = env.state().shape[0]
-    actor = Actor(obs_dim=30, act_dim=3).to(DEVICE)
+    obs_dim = env._obs_space.shape[0]
+    act_dim = env._act_space.shape[0]         # 10 = delta_lambda(n=4) + delta_wrench(6)
+    actor = Actor(obs_dim=obs_dim, act_dim=act_dim).to(DEVICE)
     critic = Critic(state_dim=state_dim).to(DEVICE)
+    warm_best = float("inf")
     if WARMSTART:
         ck = torch.load(WARMSTART, map_location=DEVICE, weights_only=False)
         actor.load_state_dict(ck["state_dict"])
-        om = ck["obs_mean"].astype(np.float32)      # (1,30) — actor input normalization
-        os_ = ck["obs_std"].astype(np.float32)
-        print(f"actor warm-started from {WARMSTART} (+ its obs normalization)")
+        om = ck["obs_mean"].astype(np.float32); os_ = ck["obs_std"].astype(np.float32)
+        crit_msg = ""
+        if ck.get("critic_state") is not None:               # warm critic too (avoids the value re-learn dip)
+            critic.load_state_dict(ck["critic_state"]); crit_msg = " + critic"
+        warm_best = ck.get("best_det", float("inf"))         # resume: don't re-save a worse ckpt as "best"
+        bd = f", best_det {warm_best:.3f}" if warm_best < float("inf") else ""
+        print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg}{bd})")
     else:
-        om = np.zeros((1, 30), np.float32); os_ = np.ones((1, 30), np.float32)
+        om, os_ = estimate_norm(env, rng)     # random-rollout obs normalization (mixed-scale {obs_dim}-D)
+        print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
     om_t = torch.tensor(om, device=DEVICE); os_t = torch.tensor(os_, device=DEVICE)
     actor.log_std.data.fill_(LOG_STD_INIT)      # set exploration scale (overrides warm-start's)
     opt_a = torch.optim.Adam(actor.parameters(), lr=LR_ACTOR)
@@ -160,10 +199,20 @@ def main():
 
     hist_R, hist_loop = [], []
     hist_det_it, hist_det = [], []
-    for it in range(1, ITERS + 1):
+    best_det = warm_best                     # resume from the warm-start's best (else inf)
+
+    def save_ckpt(path, best):               # full resumable state: actor + critic + norm + best_det
+        torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
+                    "critic_state": {k: v.cpu() for k, v in critic.state_dict().items()},
+                    "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,
+                    "best_det": best}, path)
+
+    it = 0
+    try:
+      for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
         (obs_b, act_b, logp_b, state_b, val_b, rew_b, done_b,
-         mean_ep_r, mean_loop) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_)
+         mean_ep_r, mean_loop, n_blowups) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_)
 
         T = len(rew_b)
         advs = np.zeros((T, N), np.float32); rets = np.zeros((T, N), np.float32)
@@ -180,8 +229,8 @@ def main():
             idx = rng.permutation(T)
             for s in range(0, T, MINIBATCH_STEPS):
                 mb = idx[s:s + MINIBATCH_STEPS]
-                o = (obs_t[mb].reshape(-1, 30) - om_t) / os_t                  # (mb*N,30) normalized
-                a = act_t[mb].reshape(-1, 3)
+                o = (obs_t[mb].reshape(-1, obs_dim) - om_t) / os_t             # (mb*N,obs_dim) normalized
+                a = act_t[mb].reshape(-1, act_dim)
                 lp_old = logp_old[mb].reshape(-1)
                 A = adv_t[mb].reshape(-1)                                      # per-drone advantage
 
@@ -204,21 +253,23 @@ def main():
         hist_R.append(mean_ep_r); hist_loop.append(mean_loop)
         det_str = ""
         if it == 1 or it == ITERS or it % EVAL_EVERY == 0:
-            det = eval_policy(env, actor, om, os_)
+            det, det_load, det_loadmax, det_swing = eval_policy(env, actor, om, os_)
             hist_det_it.append(it); hist_det.append(det)
-            det_str = f"  DET_loop {det:.3f}"
+            det_str = (f"  DET_loop {det:.3f}  DET_load {det_load:.3f}"
+                       f"  loadmax {det_loadmax:.3f}  swing {det_swing:.3f}")
+            if det < best_det:                          # keep the BEST deterministic policy, not the last
+                best_det = det
+                save_ckpt("residual_mappo.pt", best_det)
+                det_str += f"  (new best {best_det:.3f} -> saved)"
+        blow_str = f"  blowups {n_blowups}" if n_blowups else ""
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
-              f"| critic_loss {loss_c.item():.3f}  ent {ent.item():.3f}  | {dt:.1f}s")
+              f"| critic_loss {loss_c.item():.3f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
+    except KeyboardInterrupt:
+        print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
 
-        if it % 10 == 0 or it == ITERS:
-            torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
-                        "obs_mean": om, "obs_std": os_, "obs_dim": 30, "act_dim": 3},
-                       "residual_mappo.pt")
-            torch.save({"state_dict": {k: v.cpu() for k, v in critic.state_dict().items()},
-                        "state_dim": state_dim}, "residual_mappo_critic.pt")
-
+    save_ckpt("residual_mappo_last.pt", best_det)   # LATEST resumable state (resume via WARMSTART=this)
     env.close()
-    print("saved residual_mappo.pt, residual_mappo_critic.pt")
+    print(f"best (deploy) -> residual_mappo.pt (BEST DET_loop {best_det:.3f});  resume -> residual_mappo_last.pt")
 
     # training curves
     its = range(1, len(hist_R) + 1)
