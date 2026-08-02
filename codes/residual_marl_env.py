@@ -140,9 +140,9 @@ class ResidualMARLEnv(ParallelEnv):
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
         blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
-        manifold_w=0.5,    # distance to the expert loiter loop -> served by delta_lambda. REGIME 4: eased 1->0.5
-                           #   so load/stall terms can pull the policy OFF the expert where the expert is
-                           #   suboptimal (expert-tracking capped us at DET_R -0.166). Kept nonzero = anti-degeneracy.
+        manifold_w=1.0,    # distance to the expert loiter loop -> served by delta_lambda. Back to the PROVEN
+                           #   value (regime-4 0.5 was marginal + muddied comparisons) so the delta_w ablation
+                           #   is a clean single variable against the split1 baseline reward.
         stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
                            #   d^2 + stall_lin*d, d=relu(eps+margin-v). 400 was OVERKILL: it drowned every
                            #   other term (jerk/swing became rounding errors) AND drove entropy collapse
@@ -155,9 +155,10 @@ class ResidualMARLEnv(ParallelEnv):
                            #   with a BUFFER above the true stall (0.25) and never graze it. Raise for more buffer.
         load_w=10.0,       # load-tracking. Back to moderate: it no longer has to bully one actuator —
                            #   delta_wrench is its dedicated knob, so tracking (delta_lambda) is conflict-free.
-        swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping signal. OFF: it bribed the policy to slow
-                           #   the formation -> stalls. The coord term below smooths the load instead (no
-                           #   slow-down). Reintroduce SMALL only if coord isn't enough.
+        swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping. OFF (proven twice): swing is STRUCTURAL to
+                           #   the residual's loop-correction, not a dampable side-effect -> penalizing it can't
+                           #   reduce it and only craters vmin (drones slow to fake low load-velocity). The real
+                           #   swing source is delta_wrench being (mis)used to fight stall -> leaks into load.
         jerk_w=8.0,        # per-drone velocity JERK ||v_t - 2 v_{t-1} + v_{t-2}||^2 -> punish JITTER. GRACED
                            #   at startup. CLIPPED per-step at jerk_cap. WHY CLIP: exploration inflates jerk
                            #   ~30x (det ~0.06 -> sampled ~2), so UNCLIPPED the cheapest way to cut the penalty
@@ -186,6 +187,9 @@ class ResidualMARLEnv(ParallelEnv):
         noise_corr=0.0, own_noise=0.0, actuation_noise=0.0,
         # --- temporal desync (scalar or length-n) ---
         ctrl_delay=0, clock_offset=0.0,
+        # --- ablation: zero the delta_wrench (range/load-trim) head -> delta_lambda-only policy.
+        #     Tests whether the load head earns its keep or is just a load-disturbing stall crutch. ---
+        disable_dw=False,
     ):
         self.n = n_carriers
         self.dt = step_size
@@ -211,6 +215,7 @@ class ResidualMARLEnv(ParallelEnv):
         self.actuation_noise = actuation_noise
         self.ctrl_delay = self._broadcast(ctrl_delay).astype(int)
         self.clock_offset = self._broadcast(clock_offset).astype(float)
+        self.disable_dw = disable_dw
 
         self.possible_agents = [f"drone_{i}" for i in range(self.n)]
         self.agents = list(self.possible_agents)
@@ -408,6 +413,8 @@ class ResidualMARLEnv(ParallelEnv):
             a = np.asarray(actions[name], dtype=float)
             dlam = self._clip_norm(a[:self.n],        self.cap_lam * np.linalg.norm(lams[i]))
             dw   = self._clip_norm(a[self.n:self.n+6], self.cap_w   * np.linalg.norm(self.locals[i]._w_d))
+            if self.disable_dw:                       # delta_lambda-only ablation: no load-space trim
+                dw = np.zeros_like(dw)
             nulls = self.locals[i]._Nmat @ dlam                       # residual nullspace force (3n,)
             df_full = self.locals[i]._G_pinv @ dw + nulls            # (3n,) range + null
             df = df_full[3 * i: 3 * i + 3]

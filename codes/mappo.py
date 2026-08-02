@@ -28,6 +28,10 @@ from networks import Actor, Critic
 DESYNC = dict(pos_noise=0.03, vel_noise=0.10, noise_corr=0.995)
 DELAY_CHOICES = (1, 2)
 
+# ABLATION: True = delta_lambda-ONLY (zero the delta_wrench/load-trim head). Tests whether dw earns
+# its keep or is just a load-disturbing stall crutch (removing it should drop swing toward base ~0.10).
+DISABLE_DW = True
+
 # DIAGNOSTIC: False = FIX one desync realization (deterministic env) to test whether the
 # policy can overfit a SINGLE case at all. True = per-episode domain randomization (needs a
 # big batch to average out draw variance -- that's what drowned the first run).
@@ -187,7 +191,7 @@ def main():
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
 
-    env = ResidualMARLEnv(**DESYNC)
+    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW)
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
     state_dim = env.state().shape[0]

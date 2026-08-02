@@ -27,6 +27,8 @@ DESYNC_ON = True   # set False to see ONLY the coherent (no-noise, no-delay) bas
 COMPARE = False     # when desync is on, overlay a coherent run so degradation is obvious
 POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate; None -> just base-only desync
                                          #   (_last = latest, saved on Ctrl+C; _fixed = fixed-scenario best)
+ZERO_DW = True                           # zero the delta_wrench (load-trim) head at apply time -> watch the
+                                         #   CURRENT two-head policy run delta_lambda-ONLY (the dw ablation, live)
 
 # --- held-out generalization test: eval the trained policy on a scenario it NEVER trained on
 #     (different noise seed + different delay assignment, same {1,2} range & noise levels). ---
@@ -56,9 +58,10 @@ def load_policy(path):
     return actor, ck["obs_mean"].astype(np.float32), ck["obs_std"].astype(np.float32)
 
 
-def run_episode(policy=None, seed=None, **kwargs):
+def run_episode(policy=None, seed=None, zero_dw=False, **kwargs):
     """Roll out one episode. policy=None -> zero residual (base only); else the trained
     residual actor's deterministic MEAN action from each drone's local (noisy) obs.
+    zero_dw=True -> zero the delta_wrench dims (a[N:N+6]) -> delta_lambda-only ablation.
     seed fixes the noise realization (pass FIXED_SEED to reproduce the training scenario)."""
     env = ResidualMARLEnv(n_carriers=N, epsilon=EPSILON, **kwargs)
     obs, _ = env.reset(seed=seed)
@@ -86,6 +89,8 @@ def run_episode(policy=None, seed=None, **kwargs):
             oa = np.stack([obs[a] for a in agents]).astype(np.float32)
             with torch.no_grad():
                 mean = actor(torch.tensor(((oa - om) / os_).astype(np.float32))).numpy()
+            if zero_dw:
+                mean[:, N:N + 6] = 0.0            # delta_lambda-only: drop the load-trim head
             act = {a: mean[i] for i, a in enumerate(agents)}
         obs, *_ = env.step(act)
         t += env.dt
@@ -105,10 +110,11 @@ if __name__ == "__main__":
         print(f"[warn] {POLICY_PATH} not found -> showing base-only desync")
     if pol is not None:                     # trained residual vs base-only on a HELD-OUT scenario
         cfg = dict(TRAIN_DESYNC, ctrl_delay=GEN_DELAYS)   # different delays + seed than training
-        des = run_episode(policy=pol, seed=GEN_SEED, **cfg)
+        des = run_episode(policy=pol, seed=GEN_SEED, zero_dw=ZERO_DW, **cfg)
         coh = run_episode(seed=GEN_SEED, **cfg)
         print(f"[held-out] seed={GEN_SEED} delays={GEN_DELAYS}  (trained on seed={FIXED_SEED} delays={FIXED_DELAYS})")
-        lbl_des, lbl_coh = "trained residual", "base (no residual)"
+        lbl_des = "residual (dlam-only)" if ZERO_DW else "trained residual"
+        lbl_coh = "base (no residual)"
     elif DESYNC_ON:
         des = run_episode(**DESYNC)
         coh = run_episode() if COMPARE else None
