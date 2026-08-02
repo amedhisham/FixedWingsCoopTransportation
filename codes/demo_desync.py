@@ -25,7 +25,7 @@ N = 4
 EPSILON = 0.25
 DESYNC_ON = True   # set False to see ONLY the coherent (no-noise, no-delay) baseline
 COMPARE = False     # when desync is on, overlay a coherent run so degradation is obvious
-POLICY_PATH = "residual_mappo_last.pt"   # trained residual to evaluate; None -> just base-only desync
+POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate; None -> just base-only desync
                                          #   (_last = latest, saved on Ctrl+C; _fixed = fixed-scenario best)
 
 # --- held-out generalization test: eval the trained policy on a scenario it NEVER trained on

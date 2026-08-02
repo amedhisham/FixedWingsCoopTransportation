@@ -140,15 +140,42 @@ class ResidualMARLEnv(ParallelEnv):
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
         blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
-        manifold_w=1.0,    # distance to the expert loiter loop (the main objective) -> served by delta_lambda
-        stall_w=300.0,     # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL — hard constraint).
-                           #   50 was too weak (swing term outbid it -> drones slowed below stall). One-sided
-                           #   so a big weight only enforces "stay above epsilon", never distorts above it.
+        manifold_w=0.5,    # distance to the expert loiter loop -> served by delta_lambda. REGIME 4: eased 1->0.5
+                           #   so load/stall terms can pull the policy OFF the expert where the expert is
+                           #   suboptimal (expert-tracking capped us at DET_R -0.166). Kept nonzero = anti-degeneracy.
+        stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
+                           #   d^2 + stall_lin*d, d=relu(eps+margin-v). 400 was OVERKILL: it drowned every
+                           #   other term (jerk/swing became rounding errors) AND drove entropy collapse
+                           #   (ent 4->-0.2, exploration died). The hinge+margin already give a firm bite
+                           #   (~8.6 at a 0.15 dip) at w=50 -> stall stays enforced without steamrolling.
+        stall_lin=1.0,     # linear-hinge coefficient (see stall_w). Raise to push the margin harder.
+        stall_grace=20,    # skip stall penalty for the first N steps: drones accelerate from ~rest at reset,
+                           #   an UNAVOIDABLE dip -> don't penalize it (lets stall_w be big without blowing up R).
+        stall_margin=0.05, # penalize below (epsilon + margin), NOT just below epsilon -> the drones cruise
+                           #   with a BUFFER above the true stall (0.25) and never graze it. Raise for more buffer.
         load_w=10.0,       # load-tracking. Back to moderate: it no longer has to bully one actuator —
                            #   delta_wrench is its dedicated knob, so tracking (delta_lambda) is conflict-free.
-        swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping signal. TEMPORARILY OFF: it was bribing the
-                           #   policy to slow the formation (less load motion) -> drones dropped below stall.
-                           #   Isolate the stall fix first; reintroduce a SMALL swing_w once airspeed is solid.
+        swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping signal. OFF: it bribed the policy to slow
+                           #   the formation -> stalls. The coord term below smooths the load instead (no
+                           #   slow-down). Reintroduce SMALL only if coord isn't enough.
+        jerk_w=8.0,        # per-drone velocity JERK ||v_t - 2 v_{t-1} + v_{t-2}||^2 -> punish JITTER. GRACED
+                           #   at startup. CLIPPED per-step at jerk_cap. WHY CLIP: exploration inflates jerk
+                           #   ~30x (det ~0.06 -> sampled ~2), so UNCLIPPED the cheapest way to cut the penalty
+                           #   is to shrink log_std (kill exploration), NOT smooth the mean -> last run reward
+                           #   improved via entropy collapse (4->-0.2) while deterministic jerk stayed flat.
+                           #   Clipping zeros the gradient on the exploration spikes -> the ONLY way left to
+                           #   lower the penalty is to smooth the sub-cap (structural) jitter of the MEAN.
+        jerk_cap=0.05,     # per-step cap on jerk^2 (~||jerk||<0.22): above deterministic range (p95 0.014),
+                           #   below exploration (~4) -> smooths the mean without the explore-less shortcut.
+        coord_w=0.0,       # ||sum_i f_int||^2 COORDINATION: internal forces cancel iff drones agree; the
+                           #   NON-cancellation is the nullspace leak that disturbs the load -> BOTH a
+                           #   coordination and load-neutrality term (CLEAN swing fix, no airspeed cost).
+                           #   Safe from all-zero degeneracy ONLY if manifold_w stays comparable. w=50 was a
+                           #   DISASTER: policy leak is 0.79N (10x base) + exploration inflates it -> team_R
+                           #   -800k, coord DOMINATED and steamrolled loop/load/swing (like stall_w=400).
+                           #   w=3 = GENTLE retry: does coord drop WITHOUT wrecking tracking, and does swing
+                           #   then fall? If swing still doesn't fall at gentle w -> leak isn't the swing
+                           #   cause (maybe TORQUE leak / inherent desync) -> abandon coord for swing.
         expert_ref="expert_ref.npz",
         # --- classical config ---
         epsilon=0.25,
@@ -169,6 +196,9 @@ class ResidualMARLEnv(ParallelEnv):
         self.blowup_penalty = blowup_penalty
         self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
         self.swing_w = swing_w
+        self.coord_w = coord_w
+        self.jerk_w, self.jerk_cap = jerk_w, jerk_cap
+        self.stall_lin, self.stall_grace, self.stall_margin = stall_lin, stall_grace, stall_margin
         self.expert_pos = np.load(expert_ref)["dpos"]   # (n, T, 3) per-drone reference loiter path
         self.epsilon = epsilon
         self.phases = np.asarray(phases, dtype=float)
@@ -332,6 +362,9 @@ class ResidualMARLEnv(ParallelEnv):
         self._prev_f = np.array([0.0, 0.0, self._Fz] * self.n)
         self._fg = np.zeros((self.n, 3))          # base load-serving force slice (obs, one-step lag)
         self._flam = np.zeros((self.n, 3))         # base nullspace force slice
+        self._net_fint = np.zeros(3)               # sum of internal forces (coordination); set each step
+        self._v_prev1 = None                       # drone velocities t-1, t-2 (for jerk = 2nd difference)
+        self._v_prev2 = None
         self.agents = list(self.possible_agents)
 
         self._update_estimates(obs42)
@@ -370,14 +403,18 @@ class ResidualMARLEnv(ParallelEnv):
         #        f_eff = G+(w_d+dw) + N(lam+dlam) = f_base + [G+ dw + N dlam]; keep own slice. ---
         f_cmd = f_base.copy()
         delta_f = {}
+        net_fint = np.zeros(3)               # sum of applied internal (nullspace) force slices -> COORDINATION
         for i, name in enumerate(self.possible_agents):
             a = np.asarray(actions[name], dtype=float)
             dlam = self._clip_norm(a[:self.n],        self.cap_lam * np.linalg.norm(lams[i]))
             dw   = self._clip_norm(a[self.n:self.n+6], self.cap_w   * np.linalg.norm(self.locals[i]._w_d))
-            df_full = self.locals[i]._G_pinv @ dw + self.locals[i]._Nmat @ dlam   # (3n,)
+            nulls = self.locals[i]._Nmat @ dlam                       # residual nullspace force (3n,)
+            df_full = self.locals[i]._G_pinv @ dw + nulls            # (3n,) range + null
             df = df_full[3 * i: 3 * i + 3]
             f_cmd[3 * i: 3 * i + 3] = f_base[3 * i: 3 * i + 3] + df
+            net_fint += self._flam[i] + nulls[3 * i: 3 * i + 3]      # total applied internal force, this drone
             delta_f[name] = df
+        self._net_fint = net_fint            # =0 iff internal forces cancel (coordinated); leak disturbs load
 
         # --- 3. Actuation noise (optional). ---
         if self.actuation_noise > 0:
@@ -404,7 +441,8 @@ class ResidualMARLEnv(ParallelEnv):
             term = {a: False for a in self.possible_agents}
             trunc = {a: True for a in self.possible_agents}
             info = {a: {"lambda": 0.0, "prdot_own": 0.0, "loop_dist": 5.0,
-                        "load_err": 5.0, "load_verr": 5.0, "blowup": True}
+                        "load_err": 5.0, "load_verr": 5.0, "min_speed": 0.0, "coord": 5.0, "jerk": 5.0,
+                        "blowup": True}
                     for a in self.possible_agents}
             return zeros, pen, term, trunc, info
 
@@ -417,16 +455,28 @@ class ResidualMARLEnv(ParallelEnv):
         ep, _, ev, _ = error_calculation(npos, nvel, nR, nw, self.t)
         load_err2 = float(ep @ ep)
         swing2 = float(ev @ ev)          # load velocity-error -> damping/smoothness signal (global)
+        coord2 = float(self._net_fint @ self._net_fint)   # ||sum internal force||^2 -> coordination/leak (global)
         idx = min(self._step, self.expert_pos.shape[1] - 1)   # current step -> phase-correct expert point
+        v_cur = obs42[18 + 3 * self.n: 18 + 6 * self.n].reshape(self.n, 3)   # drone velocity vectors
+        # per-drone JERK = ||v_t - 2 v_{t-1} + v_{t-2}||^2 (needs 2 steps of history + past startup grace)
+        have_jerk = self._v_prev1 is not None and self._v_prev2 is not None and self._step > self.stall_grace
+        jerk_vec = (v_cur - 2 * self._v_prev1 + self._v_prev2) if have_jerk else np.zeros((self.n, 3))
         rewards, loop_d = {}, {}
+        min_speed = np.inf                # slowest drone this step -> stall monitor (DET_stall)
         for i, name in enumerate(self.possible_agents):
             p_i = obs42[18 + 3 * i: 18 + 3 * i + 3]
-            v_i = float(np.linalg.norm(obs42[18 + 3 * self.n + 3 * i: 18 + 3 * self.n + 3 * i + 3]))
+            v_i = float(np.linalg.norm(v_cur[i]))
+            min_speed = min(min_speed, v_i)
             d2 = float(np.sum((self.expert_pos[i][idx] - p_i) ** 2))   # TIME-INDEXED target
-            stall = max(0.0, self.epsilon - v_i) ** 2
+            d_stall = max(0.0, (self.epsilon + self.stall_margin) - v_i)   # depth below CRUISE floor (eps+margin)
+            stall = 0.0 if self._step <= self.stall_grace else d_stall ** 2 + self.stall_lin * d_stall
+            jerk2 = min(float(jerk_vec[i] @ jerk_vec[i]), self.jerk_cap)   # per-drone jerk, CLIPPED (see jerk_cap)
             rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall
-                              + self.load_w * load_err2 + self.swing_w * swing2)
+                              + self.load_w * load_err2 + self.swing_w * swing2
+                              + self.coord_w * coord2 + self.jerk_w * jerk2)
             loop_d[name] = d2 ** 0.5
+        self._v_prev2 = self._v_prev1        # roll velocity history for next step's jerk
+        self._v_prev1 = v_cur
 
         # --- 6. Sense the new state and package outputs. ---
         self._update_estimates(obs42)
@@ -435,11 +485,16 @@ class ResidualMARLEnv(ParallelEnv):
         truncations = {a: truncated for a in self.possible_agents}
         load_err = load_err2 ** 0.5
         load_verr = swing2 ** 0.5          # load velocity-error norm = the SWING rate (for eval/demo)
+        coord = coord2 ** 0.5              # ||sum internal force|| (for calibrating coord_w + monitoring)
+        jerk = float(np.mean(np.linalg.norm(jerk_vec, axis=1)))   # mean per-drone velocity jerk (JITTER monitor)
         infos = {name: {"lambda": lam_own[i],
                         "prdot_own": float(np.linalg.norm(self.locals[i]._vR[i])),
                         "loop_dist": loop_d[name],
                         "load_err": load_err,
-                        "load_verr": load_verr}
+                        "load_verr": load_verr,
+                        "min_speed": min_speed,
+                        "coord": coord,
+                        "jerk": jerk}
                  for i, name in enumerate(self.possible_agents)}
 
         if truncated:

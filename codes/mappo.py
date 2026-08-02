@@ -52,14 +52,18 @@ LAMBDA = 0.95
 CLIP = 0.2
 LR_ACTOR = 3e-4
 LR_CRITIC = 1e-3
-ENT_COEF = 0.0
+ENT_COEF = 0.0015            # entropy bonus. 0.0 -> collapse (ent 4->-0.2); 0.01 -> RUNAWAY (ent 4.25->5.4);
+                             #   0.003 STILL crept up 4.5->4.9 while DET_R/load/swing all regressed (entropy
+                             #   bonus out-pushing the tiny task gradient, critic_loss ~0). 0.0015 = floor
+                             #   exploration without inflating it -> want ent to PLATEAU ~4.3, not creep up.
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
 EVAL_EVERY = 2               # every N iters, eval the DETERMINISTIC (mean-action) policy -> true loop_dist
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo_last.pt"  # warm-start the randomization run from the fixed-scenario best
-                                       #   (actor + its obs normalization + critic if present)
+WARMSTART = "residual_mappo.pt"       # BEST-DET_R checkpoint (the -0.166 policy), NOT _last: _last is the
+                                       #   resume/last-step state, always PAST the peak when the policy is
+                                       #   drifting -> resuming from it gives back the gain (cost us run 2).
 
 
 def compute_gae(rew, val, done, gamma, lam):
@@ -102,16 +106,29 @@ def eval_policy(env, actor, om, os_):
     env.ctrl_delay = np.asarray(EVAL_DELAYS, dtype=int)
     obs, _ = env.reset(seed=EVAL_SEED)
     agents = env.possible_agents
-    loops, loads, swings = [], [], []
+    loops, loads, swings, rews, speeds, coords, jerks = [], [], [], [], [], [], []
+    floor = env.epsilon + env.stall_margin              # cruise floor (below = stall risk)
+    k = 0
     while env.agents:
         oa = np.stack([obs[a] for a in agents]).astype(np.float32)
         with torch.no_grad():
             mean = actor(torch.tensor(((oa - om) / os_).astype(np.float32), device=DEVICE)).cpu().numpy()
-        obs, _, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
+        obs, rewards, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
+        rews.append(np.mean([rewards[a] for a in agents]))  # per-step mean reward (the SELECTION metric)
         loops.append(np.mean([infos[a]["loop_dist"] for a in agents]))
         loads.append(infos[agents[0]]["load_err"])          # load pos error is global (same for all drones)
         swings.append(infos[agents[0]]["load_verr"])        # load VELOCITY error = swing rate
-    return float(np.mean(loops)), float(np.mean(loads)), float(np.max(loads)), float(np.mean(swings))
+        coords.append(infos[agents[0]]["coord"])            # ||sum internal force|| (coordination/leak)
+        k += 1
+        if k > env.stall_grace:                             # skip startup (drones spin up from rest, not a stall)
+            speeds.append(infos[agents[0]]["min_speed"])    # slowest drone this step (stall monitor)
+            jerks.append(infos[agents[0]]["jerk"])          # velocity jitter (skip the startup jolt)
+    speeds = np.asarray(speeds)
+    # mean-per-step reward (length-robust: a blowup -> high per-step penalty, not rewarded for a short ep)
+    return dict(reward=float(np.mean(rews)), loop=float(np.mean(loops)),
+                load=float(np.mean(loads)), loadmax=float(np.max(loads)), swing=float(np.mean(swings)),
+                vmin=float(speeds.min()), stallfrac=float((speeds < floor).mean()),
+                coord=float(np.mean(coords)), jerk=float(np.mean(jerks)))
 
 
 def collect(env, actor, critic, n_steps, rng, om, os_):
@@ -178,7 +195,6 @@ def main():
     act_dim = env._act_space.shape[0]         # 10 = delta_lambda(n=4) + delta_wrench(6)
     actor = Actor(obs_dim=obs_dim, act_dim=act_dim).to(DEVICE)
     critic = Critic(state_dim=state_dim).to(DEVICE)
-    warm_best = float("inf")
     if WARMSTART:
         ck = torch.load(WARMSTART, map_location=DEVICE, weights_only=False)
         actor.load_state_dict(ck["state_dict"])
@@ -186,9 +202,7 @@ def main():
         crit_msg = ""
         if ck.get("critic_state") is not None:               # warm critic too (avoids the value re-learn dip)
             critic.load_state_dict(ck["critic_state"]); crit_msg = " + critic"
-        warm_best = ck.get("best_det", float("inf"))         # resume: don't re-save a worse ckpt as "best"
-        bd = f", best_det {warm_best:.3f}" if warm_best < float("inf") else ""
-        print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg}{bd})")
+        print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg})")
     else:
         om, os_ = estimate_norm(env, rng)     # random-rollout obs normalization (mixed-scale {obs_dim}-D)
         print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
@@ -199,13 +213,14 @@ def main():
 
     hist_R, hist_loop = [], []
     hist_det_it, hist_det = [], []
-    best_det = warm_best                     # resume from the warm-start's best (else inf)
+    best_reward = -float("inf")              # RESET each run: reward is comparable only within a fixed
+                                             #   reward scheme, so "best since THIS run started" (not carried).
 
-    def save_ckpt(path, best):               # full resumable state: actor + critic + norm + best_det
+    def save_ckpt(path, best):               # full resumable state: actor + critic + norm + best reward
         torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
                     "critic_state": {k: v.cpu() for k, v in critic.state_dict().items()},
                     "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,
-                    "best_det": best}, path)
+                    "best_reward": best}, path)
 
     it = 0
     try:
@@ -253,23 +268,24 @@ def main():
         hist_R.append(mean_ep_r); hist_loop.append(mean_loop)
         det_str = ""
         if it == 1 or it == ITERS or it % EVAL_EVERY == 0:
-            det, det_load, det_loadmax, det_swing = eval_policy(env, actor, om, os_)
-            hist_det_it.append(it); hist_det.append(det)
-            det_str = (f"  DET_loop {det:.3f}  DET_load {det_load:.3f}"
-                       f"  loadmax {det_loadmax:.3f}  swing {det_swing:.3f}")
-            if det < best_det:                          # keep the BEST deterministic policy, not the last
-                best_det = det
-                save_ckpt("residual_mappo.pt", best_det)
-                det_str += f"  (new best {best_det:.3f} -> saved)"
+            e = eval_policy(env, actor, om, os_)
+            hist_det_it.append(it); hist_det.append(e["loop"])
+            det_str = (f"  DET_R {e['reward']:.3f}  loop {e['loop']:.3f}  load {e['load']:.3f}"
+                       f"  vmin {e['vmin']:.3f}  stall% {100 * e['stallfrac']:.1f}"
+                       f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  jerk {e['jerk']:.3f}")
+            if e["reward"] > best_reward:   # select on DETERMINISTIC REWARD (encodes ALL objectives), not
+                best_reward = e["reward"]   # DET_loop (blind to stall/load). Scoped to THIS run (reset above).
+                save_ckpt("residual_mappo.pt", best_reward)
+                det_str += f"  (new best {best_reward:.3f} -> saved)"
         blow_str = f"  blowups {n_blowups}" if n_blowups else ""
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
               f"| critic_loss {loss_c.item():.3f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
 
-    save_ckpt("residual_mappo_last.pt", best_det)   # LATEST resumable state (resume via WARMSTART=this)
+    save_ckpt("residual_mappo_last.pt", best_reward)   # LATEST resumable state (resume via WARMSTART=this)
     env.close()
-    print(f"best (deploy) -> residual_mappo.pt (BEST DET_loop {best_det:.3f});  resume -> residual_mappo_last.pt")
+    print(f"best (deploy) -> residual_mappo.pt (BEST DET_R {best_reward:.3f});  resume -> residual_mappo_last.pt")
 
     # training curves
     its = range(1, len(hist_R) + 1)
