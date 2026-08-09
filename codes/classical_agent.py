@@ -190,14 +190,14 @@ class ClassicalAgent:
     # ------------------------------------------------------------------ #
     #  One full control step: state  ->  full 3n cable-force vector       #
     # ------------------------------------------------------------------ #
-    def compute_forces(self, load_pos, lin_vel, R, ang_vel, t, bypass_opt=False):
+    def compute_forces(self, load_pos, lin_vel, R, ang_vel, t, bypass_opt=False, traj=None):
         """Run error -> wrench -> optimizer -> distribution on the given state.
 
         Returns the FULL (3n,) desired cable-force vector, its (3n,) analytic
         derivative, and the (n,) internal-force coefficients lambda_star. The
         caller decides which slice/coefficient to keep and whether to filter.
         """
-        ep, eR, ev, ew = error_calculation(load_pos, lin_vel, R, ang_vel, t)
+        ep, eR, ev, ew = error_calculation(load_pos, lin_vel, R, ang_vel, t, traj)
         w_d = self.wrench_control(ep, eR, ev, ew, ang_vel)
         lambda_star, f_dot = self.optimize(t, R, lin_vel, ang_vel, w_d, bypass=bypass_opt)
         forces, _ = cable_force_calculation(R, self.Bb, w_d, lambda_star, self.n)

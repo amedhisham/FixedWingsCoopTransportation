@@ -25,9 +25,9 @@ N = 4
 EPSILON = 0.25
 DESYNC_ON = True   # set False to see ONLY the coherent (no-noise, no-delay) baseline
 COMPARE = False     # when desync is on, overlay a coherent run so degradation is obvious
-POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate; None -> just base-only desync
+POLICY_PATH = "residual_mappo_r4base.pt"   # trained residual to evaluate; None -> just base-only desync
                                          #   (_last = latest, saved on Ctrl+C; _fixed = fixed-scenario best)
-ZERO_DW = True                           # zero the delta_wrench (load-trim) head at apply time -> watch the
+ZERO_DW = False                           # zero the delta_wrench (load-trim) head at apply time -> watch the
                                          #   CURRENT two-head policy run delta_lambda-ONLY (the dw ablation, live)
 
 # --- held-out generalization test: eval the trained policy on a scenario it NEVER trained on

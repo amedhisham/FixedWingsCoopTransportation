@@ -91,11 +91,12 @@ class LocalModelAgent:
                    - self.KR @ eR - self.Kw @ ew - self.KiR @ self.intg_eR)
         return np.concatenate((f_L_d, tau_L_d))
 
-    def prepare(self, pL, vL, R, omega, t):
+    def prepare(self, pL, vL, R, omega, t, traj=None):
         """Phase 1 (per drone): wrench + reconstruct(pR_dot from own lambda history) +
         build the net input row. Stashes w_d / G+ / N for finalize. Returns the RAW
-        (unnormalized) input row so the env can batch all N rows into ONE net forward."""
-        ep, eR, ev, ew = error_calculation(pL, vL, R, omega, t)
+        (unnormalized) input row so the env can batch all N rows into ONE net forward.
+        traj: this episode's reference (None -> default trajectory)."""
+        ep, eR, ev, ew = error_calculation(pL, vL, R, omega, t, traj)
         w_d = self.wrench_control(ep, eR, ev, ew, omega)
 
         # Noise-robust pR_dot: low-pass the local base force from this drone's own view + lambda.
@@ -190,6 +191,10 @@ class ResidualMARLEnv(ParallelEnv):
         # --- ablation: zero the delta_wrench (range/load-trim) head -> delta_lambda-only policy.
         #     Tests whether the load head earns its keep or is just a load-disturbing stall crutch. ---
         disable_dw=False,
+        # --- this episode's load-pose reference (callable t->(p,v,R,omega); None -> default trajectory).
+        #     Set per-episode (env.traj = ...) for the trajectory library; kept on the INSTANCE (not a
+        #     module global) so it's safe under multiprocessing / vectorized envs. ---
+        traj=None,
     ):
         self.n = n_carriers
         self.dt = step_size
@@ -216,6 +221,7 @@ class ResidualMARLEnv(ParallelEnv):
         self.ctrl_delay = self._broadcast(ctrl_delay).astype(int)
         self.clock_offset = self._broadcast(clock_offset).astype(float)
         self.disable_dw = disable_dw
+        self.traj = traj                                  # per-episode reference (None -> default)
 
         self.possible_agents = [f"drone_{i}" for i in range(self.n)]
         self.agents = list(self.possible_agents)
@@ -387,7 +393,7 @@ class ResidualMARLEnv(ParallelEnv):
         for i, lm in enumerate(self.locals):
             p_i, R_i, v_i, w_i = self._estimates[i]
             t_i = self.t + self.clock_offset[i]
-            rows.append(lm.prepare(p_i, v_i, R_i, w_i, t_i))
+            rows.append(lm.prepare(p_i, v_i, R_i, w_i, t_i, self.traj))
         Xn = ((np.stack(rows) - self.obs_mean) / self.obs_std).astype(np.float32)
         with torch.no_grad():
             lams = self.net(torch.tensor(Xn)).numpy()      # (n, n): row i = drone i's whole lambda vector
@@ -459,7 +465,7 @@ class ResidualMARLEnv(ParallelEnv):
         #        + load guardrail. Track term = squared distance to the PHASE-CORRECT expert
         #        point p_i^central(t) (the clock in obs makes this achievable); stall = floor. ---
         npos, nR, nvel, nw = self._unpack_load(obs42)
-        ep, _, ev, _ = error_calculation(npos, nvel, nR, nw, self.t)
+        ep, _, ev, _ = error_calculation(npos, nvel, nR, nw, self.t, self.traj)
         load_err2 = float(ep @ ep)
         swing2 = float(ev @ ev)          # load velocity-error -> damping/smoothness signal (global)
         coord2 = float(self._net_fint @ self._net_fint)   # ||sum internal force||^2 -> coordination/leak (global)

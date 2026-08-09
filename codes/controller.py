@@ -2,11 +2,17 @@ import numpy as np
 from optimizer import skew
 
 
-def get_reference_trajectory(t):
-    """
-    Calculates a piecewise straight-line trajectory:
+def get_reference_trajectory(t, traj=None):
+    """Load pose reference at time t: returns (p_Ld, v_Ld, R_Ld, omega_Ld).
 
+    If `traj` (a callable t -> (p, v, R, omega)) is given, delegate to it. This lets each
+    env/episode carry its OWN reference (e.g. a quintic from make_quintic_pose) WITHOUT a
+    module global -> safe under multiprocessing / vectorized envs. traj=None reproduces the
+    original single piecewise straight-line trajectory below (backward compatible).
     """
+    if traj is not None:
+        return traj(t)
+
     v_move = 1.1   # Speed during the moving phase (m/s) - change this to whatever you want
     z_hover = 1.39  # Constant flight altitude (m)
     
@@ -60,6 +66,30 @@ def get_reference_trajectory(t):
     
     return p_Ld, v_Ld, R_Ld, omega_Ld
 
+
+def make_quintic_pose(pos_delta, ramp=10.0, hold=5.0, base_pos=(0.0, 0.0, 1.39)):
+    """Build a rest-to-rest QUINTIC position trajectory (paper Fig.10 family, arXiv p2025ut).
+
+    The load moves from base_pos by pos_delta (3,) over [hold, hold+ramp] following a 5th-order
+    polynomial (zero velocity AND acceleration at both ends -> smooth, gentle), then holds. Returns
+    a callable traj(t) -> (p_Ld, v_Ld, R_Ld=I, omega_Ld=0). Orientation (roll/pitch quintic) is
+    deferred to the 6D step; for now the load translates without rotating (matches today's R_Ld=I).
+    """
+    base = np.asarray(base_pos, dtype=float)
+    delta = np.asarray(pos_delta, dtype=float)
+    R_I = np.eye(3)
+
+    def traj(t):
+        if t <= hold:
+            return base.copy(), np.zeros(3), R_I, np.zeros(3)
+        u = min((t - hold) / ramp, 1.0)
+        s = 10 * u**3 - 15 * u**4 + 6 * u**5              # position profile 0->1
+        sd = (30 * u**2 - 60 * u**3 + 30 * u**4) / ramp   # velocity profile (feedforward)
+        return base + delta * s, delta * sd, R_I, np.zeros(3)
+
+    return traj
+
+
 def vee(S):
     """
     The vee operator (inverse of the skew-symmetric operator).
@@ -67,9 +97,9 @@ def vee(S):
     """
     return np.array([S[2, 1], S[0, 2], S[1, 0]])
 
-def error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time):
+def error_calculation(curr_pos,curr_linVel,curr_orientation_matrix,curr_angVel,time,traj=None):
 
-    ref_pos,ref_linVel,ref_orientation_matrix,ref_angVel = get_reference_trajectory(time)
+    ref_pos,ref_linVel,ref_orientation_matrix,ref_angVel = get_reference_trajectory(time,traj)
 
     ep = curr_pos - ref_pos
 

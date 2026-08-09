@@ -30,7 +30,7 @@ DELAY_CHOICES = (1, 2)
 
 # ABLATION: True = delta_lambda-ONLY (zero the delta_wrench/load-trim head). Tests whether dw earns
 # its keep or is just a load-disturbing stall crutch (removing it should drop swing toward base ~0.10).
-DISABLE_DW = True
+DISABLE_DW = False
 
 # DIAGNOSTIC: False = FIX one desync realization (deterministic env) to test whether the
 # policy can overfit a SINGLE case at all. True = per-episode domain randomization (needs a
@@ -65,7 +65,7 @@ LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks sw
 EVAL_EVERY = 2               # every N iters, eval the DETERMINISTIC (mean-action) policy -> true loop_dist
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo.pt"       # BEST-DET_R checkpoint (the -0.166 policy), NOT _last: _last is the
+WARMSTART = "residual_mappo_r4base.pt"       # BEST-DET_R checkpoint (the -0.166 policy), NOT _last: _last is the
                                        #   resume/last-step state, always PAST the peak when the policy is
                                        #   drifting -> resuming from it gives back the gain (cost us run 2).
 
@@ -135,6 +135,15 @@ def eval_policy(env, actor, om, os_):
                 coord=float(np.mean(coords)), jerk=float(np.mean(jerks)))
 
 
+def critic_input(env):
+    """PRIVILEGED critic state (CTDE, training-only): true global state (42) + the per-drone
+    delay vector (n), 0-centered. The delays are a FIXED per-episode scenario parameter the
+    decentralized actor never sees; giving them to the critic lets its value baseline explain
+    away the scenario's difficulty -> the advantage isolates the ACTION, not the delay draw."""
+    d = env.ctrl_delay.astype(np.float32) - float(np.mean(DELAY_CHOICES))
+    return np.concatenate([env.state().astype(np.float32), d])
+
+
 def collect(env, actor, critic, n_steps, rng, om, os_):
     """Roll whole episodes until >= n_steps. Returns per-STEP buffers (obs has an N axis).
     Actor sees NORMALIZED obs ((obs-om)/os_); raw obs are stored (re-normalized in update)."""
@@ -155,7 +164,7 @@ def collect(env, actor, critic, n_steps, rng, om, os_):
         ep_r, ep_loop = 0.0, []
         while env.agents:
             obs_arr = np.stack([obs[a] for a in agents]).astype(np.float32)     # (N,30)
-            state = env.state().astype(np.float32)                             # (42,)
+            state = critic_input(env)                                          # (42+n,) privileged
             with torch.no_grad():
                 obs_n = ((obs_arr - om) / os_).astype(np.float32)
                 dist = actor.distribution(torch.tensor(obs_n, device=DEVICE))
@@ -194,7 +203,7 @@ def main():
     env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW)
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
-    state_dim = env.state().shape[0]
+    state_dim = env.state().shape[0] + env.n     # + privileged per-drone delays (see critic_input)
     obs_dim = env._obs_space.shape[0]
     act_dim = env._act_space.shape[0]         # 10 = delta_lambda(n=4) + delta_wrench(6)
     actor = Actor(obs_dim=obs_dim, act_dim=act_dim).to(DEVICE)
@@ -205,7 +214,10 @@ def main():
         om = ck["obs_mean"].astype(np.float32); os_ = ck["obs_std"].astype(np.float32)
         crit_msg = ""
         if ck.get("critic_state") is not None:               # warm critic too (avoids the value re-learn dip)
-            critic.load_state_dict(ck["critic_state"]); crit_msg = " + critic"
+            try:
+                critic.load_state_dict(ck["critic_state"]); crit_msg = " + critic"
+            except RuntimeError:                             # dim changed (e.g. privileged-delays critic) -> reinit
+                crit_msg = " + critic REINIT (state_dim changed)"
         print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg})")
     else:
         om, os_ = estimate_norm(env, rng)     # random-rollout obs normalization (mixed-scale {obs_dim}-D)
