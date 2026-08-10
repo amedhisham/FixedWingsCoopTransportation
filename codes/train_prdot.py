@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import TensorDataset, DataLoader
 
 from networks import Actor
-from collect_prdot_data import SUFFIX   # "" or "_analytic" (reconstruction mode)
+from collect_prdot_data import SUFFIX, PRDOT_HIDDEN, curate, BIN_NAMES   # reconstruction mode + capacity + curation
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS = 300
@@ -39,7 +39,7 @@ def fit(X, Y):
     vao, val = tt(Xn[vi]), tt(Y[vi])
     loader = DataLoader(TensorDataset(tro, trl), batch_size=BATCH, shuffle=True)
 
-    net = Actor(obs_dim=X.shape[1], act_dim=Y.shape[1]).to(DEVICE)
+    net = Actor(obs_dim=X.shape[1], act_dim=Y.shape[1], hidden=PRDOT_HIDDEN).to(DEVICE)
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     mse = torch.nn.MSELoss()
 
@@ -85,14 +85,30 @@ def fit(X, Y):
     return net, xm.astype(np.float32), xs.astype(np.float32)
 
 
+CURATE_BC = True   # drop the persistence-nailed bulk (see collect_prdot_data.keep_probs)
+
+
 def main():
     d = np.load(f"prdot_dataset{SUFFIX}.npz")
     X, Y = d["X"], d["Y"]
-    print(f"data: {len(X)} steps   X {X.shape}  Y {Y.shape}   Var(lambda)={Y.var():.4f}\n")
+    print(f"data: {len(X)} steps   X {X.shape}  Y {Y.shape}   Var(lambda)={Y.var():.4f}")
+
+    if CURATE_BC and "H" in d:                         # hardness-weighted, bin-diverse subset
+        H, bins = d["H"], d["bins"]
+        rng = np.random.default_rng(SEED)
+        mask = curate(X, Y, H, bins, rng)
+        for b, name in BIN_NAMES.items():
+            mb = bins == b
+            print(f"  bin {b} {name:>10}: {mb.sum():>7} -> kept {int((mb & mask).sum()):>7}")
+        X, Y = X[mask], Y[mask]
+        print(f"curated BC: {len(mask)} -> {len(X)} steps ({100*len(X)/len(mask):.0f}%)\n")
+    else:
+        print()
 
     net, xm, xs = fit(X, Y)
 
-    torch.save({"state_dict": net.state_dict(), "obs_mean": xm, "obs_std": xs},
+    torch.save({"state_dict": net.state_dict(), "obs_mean": xm, "obs_std": xs,
+                "hidden": PRDOT_HIDDEN},
                f"il_actor_prdot{SUFFIX}.pt")
     print(f"saved il_actor_prdot{SUFFIX}.pt  (pR_dot policy)")
     plt.show()

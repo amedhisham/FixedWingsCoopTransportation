@@ -209,6 +209,9 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
     v_L_stack = []
     for i in range(n_carriers):
         v_Li = v_Li = curr_linVel + curr_orientation_matrix @ np.cross(curr_angVel, Attachment_Point_Vectors[i, :])
+        # if 6.9 <= time <= 7.5:
+        #     print(f"[t = {time:.4f} s] ||v_Li|| -> {v_Li}")
+
         v_L_stack.extend(v_Li)
     v_L_stack = np.array(v_L_stack)
     
@@ -242,12 +245,21 @@ def optimizer(casadi_solver,time,curr_orientation_matrix,curr_linVel,curr_angVel
                             lbx=lbx, ubx=ubx,
                             lbg=lbg, ubg=[np.inf]*n_carriers)
 
+        # -----------------------------------------------------------
+        status = casadi_solver.stats()['return_status']
+
+        if 6.9 <= time <= 7.5:
+            v_Ri_sq_norms = np.array(res['g']).flatten()
+            norms_formatted = ", ".join([f"C{i}: {val:.6f}" for i, val in enumerate(v_Ri_sq_norms)])
+            print(f"[t = {time:.4f} s | Status: {status}] ||v_Ri||^2 -> {norms_formatted}")
+
         if casadi_solver.stats()['return_status'] == 'Solve_Succeeded':
             opt_x = np.array(res['x']).flatten()
         else:
             opt_x = optimizer.prev_x.copy()
         opt_xi, opt_A = opt_x[0], opt_x[1]
 
+    
 
     # 5. Extract our 4 Lambda Stars and their analytical derivatives
     lambda_star = opt_A * np.cos(opt_xi * time + phases)

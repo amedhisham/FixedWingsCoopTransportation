@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from fmpy.fmi2 import FMU2Slave
 from scipy.spatial.transform import Rotation as R
 
-from controller import  error_calculation , wrench_controller
+from controller import  error_calculation , wrench_controller, make_quintic_pose
 from optimizer import cable_force_calculation , init_optimizer , optimizer
 import time as time_module
 from scipy.io import savemat
@@ -45,7 +45,7 @@ fmu.enterInitializationMode()
 
 # Global parameters
 n_carriers = 4
-epsilon = 0.20        # Minimum velocity threshold
+epsilon = 0.25       # Minimum velocity threshold
 w_pos, w_vel = 0, 0 # Cost weights 
 phases = np.array([0, np.pi/2, 0, np.pi/2])  # two pairs: 0&2 share, 1&3 share
 bypass_optimizer = 0 #bypass optimizer for debugging , static controller
@@ -148,6 +148,13 @@ Cable_Resting_Length = fmu.getReal([vrs['Cable_Resting_Length']])[0]
 
 casadi_solver = init_optimizer(Cable_Resting_Length,n_carriers,w_pos, w_vel,phases)
 
+traj = make_quintic_pose(
+    pos_delta=[11.0, 0.0, 0.0],           # Matches 1.1 m/s * 10 s = 11.0 m
+    rot_delta=[0.0, 0.0, 0.0],
+    ramp=10.0,                            # 15.0s - 5.0s
+    hold=5.0,
+    base_pos=(0.0, 0.0, 1.39)
+)
 
 start = time_module.time()
 
@@ -270,6 +277,20 @@ while time < end_time:
 
     force_history.append(desired_forces)
     force_derv_history.append(desired_force_derivatives)
+
+    if 6.9 <= time <= 7.5:
+        for i in range(n_carriers):
+            f_i  = np.array(desired_forces[3*i : 3*i+3])
+            fd_i = np.array(f_dot[3*i : 3*i+3])
+            T_i  = np.sqrt(f_i @ f_i + 1e-6)
+            q_i  = f_i / T_i
+            Pi_i = np.eye(3) - np.outer(q_i, q_i)
+            v_Li = curr_linVel + curr_orientation_matrix @ np.cross(curr_angVel, Attachment_Point_Vectors[i, :])
+            v_Ri_pred = v_Li + (Cable_Resting_Length / T_i) * (Pi_i @ fd_i)
+            print(f"[t={time:.4f}] drone {i}: v_Ri_pred = {v_Ri_pred}")
+            print(f"[t={time:.3f}] drone {i}: fd_i={fd_i}, T_i={T_i:.4f}")
+
+
 
     # D. INJECT INPUTS: Send the 12x1 flat force vector into Inports
     fmu.setReal(force_vrs, desired_forces)

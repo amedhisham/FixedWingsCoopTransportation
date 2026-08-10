@@ -34,16 +34,28 @@ from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX
+from collect_prdot_data import (Reconstructor, build_input, LAM0, SUFFIX,
+                                 PRDOT_HIDDEN, activity_bin, curate, cap_indices, BIN_NAMES)
+from controller import get_reference_trajectory
 from deploy_prdot import main as deploy_prdot_main
+from trajectories import train_set, TRAIN_SEED
+import os
 
 BYPASS_OPT = False   # adaptive optimizer (matches prdot_dataset.npz)
+AGG_OUT = f"prdot_dagger_aggregate{SUFFIX}.npz"   # persisted DAgger aggregate -> real resume
+TRAJ_PER_ITER = 30   # GENERALIZATION: closed-loop rollouts per DAgger iter, each on a fresh
+                     #   sampled quintic-pose trajectory (was 10). More coverage per iter.
+INCLUDE_DEFAULT = True   # also roll out the ORIGINAL straight-line trajectory each iter (anchor),
+                         #   matching collect_prdot_data's include_default.
+MAX_AGG = 150_000    # cap the persisted aggregate: hardness-weighted eviction keeps it bounded
+                     #   as trajectories scale (cap_indices), so data can't explode.
+WARM_START = True    # retrain from the PREVIOUS net (not fresh) each iter -> fewer epochs suffice.
 
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
-# (deployment distribution). Decay collects progressively more off-manifold states.
-BETAS = [0.9, 0.8, 0.7, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0, 0.0]
-
-EPOCHS = 250
+# (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
+# closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
+BETAS = [0.0] * 2
+EPOCHS = 50          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
 VAL_FRAC = 0.2
@@ -55,23 +67,23 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 PAUSE_SEC = 20.0
 
 
-def rollout(policy, om, os_, beta):
-    """Drive the plant with lambda = beta*expert + (1-beta)*policy for one episode.
+def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
+    """Drive the plant with lambda = beta*expert + (1-beta)*policy for one episode on
+    reference `traj` (None -> default). env + agent are REUSED across rollouts (reset here).
 
     The policy input (pR_dot + lambda_{t-1}) is reconstructed from the APPLIED
     (mixed) lambda history — the state distribution the policy actually visits.
     Returns visited-state inputs (M,30) labelled with EXPERT lambda (M,N) + diag.
     """
-    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
     obs42, _ = env.reset()
-    J, Bb, m, L0 = read_params(env)
-    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)   # fresh expert state
+    agent.reset()
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
     prev_lam = LAM0.copy()          # APPLIED lambda_{t-1}
+    prev_vLd = None                 # ref velocity_{t-1} (accel -> activity bin)
     recon = Reconstructor(Bb, L0, DT)
 
-    X_rows, Y_rows = [], []
+    X_rows, Y_rows, H_rows, bin_rows = [], [], [], []
     lam_pol_hist = [[] for _ in range(N)]
     lam_exp_hist = [[] for _ in range(N)]
     dvel = [[] for _ in range(N)]
@@ -84,7 +96,7 @@ def rollout(policy, om, os_, beta):
         vel, angvel = obs42[12:15], obs42[15:18]
 
         # w_d ONCE (advances integrators once); reused for input, expert, and drive.
-        ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
+        ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t, traj)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
 
         # Policy input at the VISITED state: pR_dot (mode set by ANALYTIC) from lambda_{t-1}.
@@ -101,14 +113,23 @@ def rollout(policy, om, os_, beta):
         lam_mixed = beta * lam_exp + (1.0 - beta) * lam_pol
         f_full, _ = cable_force_calculation(R, Bb, w_d, lam_mixed, N)
 
+        # Hardness = DAgger disagreement ||expert - policy|| (the informative samples);
+        # activity bin from the reference kinematics (speed + finite-diff accel).
+        ref = get_reference_trajectory(t, traj)
+        v_Ld = ref[1]
+        accel = 0.0 if prev_vLd is None else float(np.linalg.norm(v_Ld - prev_vLd) / DT)
+        prev_vLd = v_Ld.copy()
+
         X_rows.append(row)
         Y_rows.append(lam_exp)
+        H_rows.append(float(np.linalg.norm(lam_exp - lam_pol)))
+        bin_rows.append(activity_bin(float(np.linalg.norm(v_Ld)), accel))
         for i in range(N):
             lam_pol_hist[i].append(lam_pol[i])
             lam_exp_hist[i].append(lam_exp[i])
             dvel[i].append(np.linalg.norm(obs42[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
         load_hist.append(pos.copy())
-        ref_hist.append(get_reference_trajectory(t)[0].copy())
+        ref_hist.append(ref[0].copy())
 
         ff = LLC_ALPHA * f_full + (1 - LLC_ALPHA) * prev_f
         deriv = (ff - prev_f) / DT
@@ -119,7 +140,6 @@ def rollout(policy, om, os_, beta):
         recon.roll(lam_mixed)
         prev_lam = lam_mixed.copy()
         t += DT
-    env.close()
 
     lam_pol_hist = [np.array(l) for l in lam_pol_hist]
     lam_exp_hist = [np.array(l) for l in lam_exp_hist]
@@ -139,12 +159,15 @@ def rollout(policy, om, os_, beta):
     }
     return (np.asarray(X_rows, dtype=np.float32),
             np.asarray(Y_rows, dtype=np.float32),
+            np.asarray(H_rows, dtype=np.float32),
+            np.asarray(bin_rows, dtype=np.int64),
             diag)
 
 
-def train(X, Y):
-    """Retrain from scratch on the aggregated set. Fresh normalization, 80/20 split,
-    best-val checkpoint. Returns cpu state_dict + stats + best-val MSE + Var(lambda)."""
+def train(X, Y, init_state=None):
+    """Retrain on the aggregated set. Fresh normalization, 80/20 split, best-val checkpoint.
+    WARM_START: init_state (previous net's cpu state_dict) seeds the weights so fewer epochs
+    suffice. Returns cpu state_dict + stats + best-val MSE + Var(lambda)."""
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
 
@@ -162,7 +185,9 @@ def train(X, Y):
     va_x, va_y = tt(Xn[val_idx]), tt(Y[val_idx])
     loader = DataLoader(TensorDataset(tr_x, tr_y), batch_size=BATCH, shuffle=True)
 
-    net = Actor(obs_dim=X.shape[1], act_dim=Y.shape[1]).to(DEVICE)
+    net = Actor(obs_dim=X.shape[1], act_dim=Y.shape[1], hidden=PRDOT_HIDDEN).to(DEVICE)
+    if init_state is not None:                       # WARM_START: seed from the previous net
+        net.load_state_dict(init_state)
     opt = torch.optim.Adam(net.parameters(), lr=LR)
     mse = torch.nn.MSELoss()
 
@@ -207,36 +232,72 @@ def show_diag(diag, label):
 
 
 def main():
-    # Warm-start from the BC prdot policy and its dataset.
-    ckpt = torch.load(f"il_actor_prdot{SUFFIX}.pt", map_location="cpu", weights_only=False)
-    policy = Actor(obs_dim=ckpt["obs_mean"].shape[1], act_dim=N)
+    # Warm-start (RESUME-aware): prefer the DAGGERED net over BC, and the saved AGGREGATE over
+    # the collect dataset -> repeated runs truly CONTINUE (build on prior corrections + the
+    # improved policy's state distribution), instead of restarting from BC + collect each time.
+    dagger_ckpt = f"il_actor_prdot_dagger{SUFFIX}.pt"
+    net_path = dagger_ckpt if os.path.exists(dagger_ckpt) else f"il_actor_prdot{SUFFIX}.pt"
+    ckpt = torch.load(net_path, map_location="cpu", weights_only=False)
+    hidden = tuple(ckpt.get("hidden", (128, 128)))     # pre-"hidden" ckpts were (128,128)
+    policy = Actor(obs_dim=ckpt["obs_mean"].shape[1], act_dim=N, hidden=hidden)
     policy.load_state_dict(ckpt["state_dict"]); policy.eval()
     om, os_ = ckpt["obs_mean"].astype(np.float32), ckpt["obs_std"].astype(np.float32)
 
-    data = np.load(f"prdot_dataset{SUFFIX}.npz")
+    data_path = AGG_OUT if os.path.exists(AGG_OUT) else f"prdot_dataset{SUFFIX}.npz"
+    data = np.load(data_path)
     D_X = data["X"].astype(np.float32)
     D_Y = data["Y"].astype(np.float32)
+    # H/bins for hardness curation. Old npz without them -> keep-all fallback (H=1, bin=cruise).
+    D_H = data["H"].astype(np.float32) if "H" in data else np.ones(len(D_X), np.float32)
+    D_bin = data["bins"].astype(np.int64) if "bins" in data else np.ones(len(D_X), np.int64)
+    print(f"warm-start net <- {net_path}  hidden={hidden}\n"
+          f"dataset        <- {data_path}  ({len(D_X)} samples)\n")
+
+    # Reuse ONE env + ONE agent (expensive CasADi solver) across all rollouts.
+    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
+    env.reset()
+    J, Bb, m, L0 = read_params(env)
+    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
+    curate_rng = np.random.default_rng(SEED)
 
     buzz_curve = []
     for k, beta in enumerate(BETAS, 1):
-        new_X, new_Y, diag = rollout(policy, om, os_, beta)
-        show_diag(diag, f"iter {k} rollout  (beta {beta:.2f})")
+        # GENERALIZATION: aggregate closed-loop corrections over a fresh batch of trajectories
+        # (disjoint per iter via TRAIN_SEED+k; all within the training distribution).
+        batch = list(train_set(TRAJ_PER_ITER, seed=TRAIN_SEED + k))
+        if INCLUDE_DEFAULT:
+            batch.insert(0, (None, None))      # anchor: closed-loop correction on the straight line too
+        buzz_k, vmin_k, track_k = [], [], []
+        for traj, _p in batch:
+            new_X, new_Y, new_H, new_bin, diag = rollout(policy, om, os_, beta, env, agent, Bb, L0, traj)
+            D_X = np.concatenate([D_X, new_X], axis=0)
+            D_Y = np.concatenate([D_Y, new_Y], axis=0)
+            D_H = np.concatenate([D_H, new_H], axis=0)
+            D_bin = np.concatenate([D_bin, new_bin], axis=0)
+            buzz_k.append(diag["buzz"]); vmin_k.append(diag["vmin"]); track_k.append(diag["track_mean"])
 
-        D_X = np.concatenate([D_X, new_X], axis=0)
-        D_Y = np.concatenate([D_Y, new_Y], axis=0)
-        state, om, os_, best_va, var_lam = train(D_X, D_Y)
-        policy = Actor(obs_dim=D_X.shape[1], act_dim=N)
+        # Cap the persisted aggregate (hardness-weighted eviction) so it can't explode.
+        keep = cap_indices(D_H, D_bin, MAX_AGG, curate_rng)
+        D_X, D_Y, D_H, D_bin = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep]
+
+        # Curate the TRAINING subset: graduated-decile keep, weighted by per-bin hardness.
+        mask = curate(D_X, D_Y, D_H, D_bin, curate_rng)
+        init = policy.state_dict() if WARM_START else None
+        state, om, os_, best_va, var_lam = train(D_X[mask], D_Y[mask], init_state=init)
+        policy = Actor(obs_dim=D_X.shape[1], act_dim=N, hidden=hidden)
         policy.load_state_dict(state); policy.eval()
 
-        buzz_curve.append(diag["buzz"])
-        print(f"iter {k}  beta {beta:.2f}  |  rollout buzz {diag['buzz']:.4f}  "
-              f"vmin {diag['vmin']:.3f}  track {diag['track_mean']:.4f}  |  "
-              f"retrain best-val MSE {best_va:.4f} (Var lam {var_lam:.3f})  |  "
-              f"dataset {len(D_X)}")
+        buzz_curve.append(float(np.mean(buzz_k)))
+        bincnt = "/".join(f"{BIN_NAMES[b][:4]}{int((D_bin[mask] == b).sum())}" for b in sorted(BIN_NAMES))
+        print(f"iter {k}  beta {beta:.2f}  ({TRAJ_PER_ITER} trajs)  |  buzz {np.mean(buzz_k):.4f}  "
+              f"vmin {min(vmin_k):.3f}  track {np.mean(track_k):.4f}  |  "
+              f"MSE {best_va:.4f} (Var {var_lam:.3f})  |  agg {len(D_X)} train {int(mask.sum())} [{bincnt}]")
+    env.close()
 
     torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},
-                "obs_mean": om, "obs_std": os_}, f"il_actor_prdot_dagger{SUFFIX}.pt")
-    print(f"\nsaved il_actor_prdot_dagger{SUFFIX}.pt")
+                "obs_mean": om, "obs_std": os_, "hidden": hidden}, f"il_actor_prdot_dagger{SUFFIX}.pt")
+    np.savez(AGG_OUT, X=D_X, Y=D_Y, H=D_H, bins=D_bin)     # persist aggregate -> next run RESUMEs
+    print(f"\nsaved il_actor_prdot_dagger{SUFFIX}.pt  +  {AGG_OUT}  ({len(D_X)} samples)")
 
     plt.figure()
     plt.plot(range(1, len(buzz_curve) + 1), buzz_curve, "o-")

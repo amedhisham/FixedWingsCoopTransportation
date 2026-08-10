@@ -30,8 +30,11 @@ from classical_agent import ClassicalAgent
 from optimizer import calculate_grasp_and_nullspace, cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from collect_il_data import clock_features, read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
+from trajectories import train_set
 
 BYPASS_OPT = False   # adaptive optimizer (the real sweeping target)
+N_TRAJ = 50          # GENERALIZATION: number of sampled quintic-pose trajectories to collect over
+                     #   (train_set, fixed seed). Was effectively 1 (single default trajectory).
 
 # Reconstruction mode toggle: False = low-pass (reconstruct_lp, the deployed base);
 # True = the original finite-difference `reconstruct`. Suffixes all outputs with
@@ -43,6 +46,70 @@ OUT = f"prdot_dataset{SUFFIX}.npz"
 
 # Optimizer's initial lambda (matches ClassicalAgent.reset's seed): A0*cos(xi0*0 + phases).
 LAM0 = 1.2 * np.cos(np.asarray(PHASES))
+
+# ---- F1 policy capacity (shared by train_prdot / dagger_prdot; saved in ckpts) --------
+PRDOT_HIDDEN = (256, 256)     # was (128,128); loaders read "hidden" from the ckpt
+
+# ---- ACTIVITY bins + two-level HARDNESS curation (shared by collect / train / dagger) --
+# Semantic bins from the REFERENCE kinematics (what the load is doing), so curation can keep
+# a diverse mix and weight harder regimes more. Bins: 0 loiter (parked), 1 cruise (steady
+# move), 2 transition (accel/decel ramp).
+V_LO = 0.05          # ref speed below this -> loiter (m/s)
+A_HI = 0.02          # ref |accel| above this -> transition (m/s^2)
+BIN_NAMES = {0: "loiter", 1: "cruise", 2: "transition"}
+P_MIN = 0.2          # per-bin keep floor (even the easiest bin keeps this x the decile weight)
+
+
+def activity_bin(speed, accel):
+    """Classify one step by reference kinematics -> bin id (0 loiter / 1 cruise / 2 transition)."""
+    if speed < V_LO:
+        return 0
+    if accel > A_HI:
+        return 2
+    return 1
+
+
+def keep_probs(H, bins, p_min=P_MIN):
+    """Two-level keep-probability per sample (the user's graduated-decile scheme).
+
+    Level 1 (bin): p_bin = max(p_min, mean_hardness(bin) / max_bin_mean_hardness)  -> harder
+      activity regimes keep a larger share.
+    Level 2 (within bin): rank by hardness into 10 deciles, decile d (0=easiest) keeps
+      weight (d+1)/10 -> 10% of the easiest tenth ... 100% of the hardest tenth.
+    Final prob = p_bin * (d+1)/10. Returns float array in [0,1].
+    """
+    H = np.asarray(H, dtype=float)
+    bins = np.asarray(bins)
+    probs = np.zeros(len(H))
+    ids = np.unique(bins)
+    bin_score = {b: H[bins == b].mean() if np.any(bins == b) else 0.0 for b in ids}
+    smax = max(bin_score.values()) + 1e-12
+    for b in ids:
+        idx = np.where(bins == b)[0]
+        n = len(idx)
+        p_bin = max(p_min, bin_score[b] / smax)
+        order = np.argsort(H[idx])                    # ascending: easy -> hard
+        dec = np.empty(n, dtype=int)
+        dec[order] = (np.arange(n) * 10) // max(n, 1)  # 0..9
+        probs[idx] = p_bin * (dec + 1) / 10.0
+    return probs
+
+
+def curate(X, Y, H, bins, rng, p_min=P_MIN):
+    """Stochastic keep-mask from keep_probs -> a hardness-weighted, bin-diverse subset."""
+    p = keep_probs(H, bins, p_min)
+    mask = rng.random(len(p)) < p
+    return mask
+
+
+def cap_indices(H, bins, max_n, rng, p_min=P_MIN):
+    """Indices to RETAIN so the aggregate stays <= max_n: highest keep-prob wins (ties broken
+    randomly, preserving within-decile diversity). Returns all indices if already under cap."""
+    n = len(H)
+    if n <= max_n:
+        return np.arange(n)
+    score = keep_probs(H, bins, p_min) + 1e-6 * rng.random(n)   # noise = random tie-break
+    return np.argsort(score)[::-1][:max_n]
 
 # Reconstruction low-pass: OUR estimate of the drone LLC time const (MUST match the
 # env's recon_tau). Kills the finite-difference noise amplification; tau < plant's 0.2
@@ -161,16 +228,18 @@ class Reconstructor:
             self.prev_f_lp = self._f_lp
 
 
-def collect():
-    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
+def rollout(env, agent, Bb, L0, traj):
+    """One full-episode expert rollout on reference `traj` (None -> default trajectory).
+    Fresh per-episode state (env + agent are reused across trajectories, reset here).
+    Returns (X_rows, Y_rows, hist)."""
     obs42, _ = env.reset()
-    J, Bb, m, L0 = read_params(env)
-    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
+    agent.reset()
 
     prev_f = np.array([0.0, 0.0, FZ] * N)           # applied force (for plant filtering only)
     prev_lam = LAM0.copy()                          # lambda_{t-1}
+    prev_vLd = None                                 # ref velocity_{t-1} (for accel -> activity bin)
     recon = Reconstructor(Bb, L0, DT)
-    X_rows, Y_rows = [], []
+    X_rows, Y_rows, H_rows, bin_rows = [], [], [], []
 
     # Histories for the diagnostic plots.
     t_hist, load_hist, ref_hist = [], [], []
@@ -186,7 +255,7 @@ def collect():
         vel, angvel = obs42[12:15], obs42[15:18]
 
         # w_d ONCE (advances integrators once); reused for both input and target.
-        ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t)
+        ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t, traj)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
 
         # Input: pR_dot (mode set by ANALYTIC) from lambda_{t-1} + current load state.
@@ -198,10 +267,19 @@ def collect():
         Y_rows.append(lam)
         f_full, _ = cable_force_calculation(R, Bb, w_d, lam, N)
 
+        # Activity bin (ref kinematics) + BC-hardness proxy = target step change ||lam - lam_{t-1}||
+        # (large where the optimizer lambda is NOT persistence -> the informative samples).
+        ref = get_reference_trajectory(t, traj)
+        v_Ld = ref[1]
+        accel = 0.0 if prev_vLd is None else float(np.linalg.norm(v_Ld - prev_vLd) / DT)
+        bin_rows.append(activity_bin(float(np.linalg.norm(v_Ld)), accel))
+        H_rows.append(float(np.linalg.norm(lam - prev_lam)))
+        prev_vLd = v_Ld.copy()
+
         # Record.
         t_hist.append(t)
         load_hist.append(pos.copy())
-        ref_hist.append(get_reference_trajectory(t)[0].copy())
+        ref_hist.append(ref[0].copy())
         for i in range(N):
             dpos[i].append(obs42[18 + 3 * i: 18 + 3 * i + 3].copy())
             dvel_true[i].append(np.linalg.norm(obs42[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
@@ -218,7 +296,6 @@ def collect():
         recon.roll(lam)
         prev_lam = lam.copy()
         t += DT
-    env.close()
 
     hist = dict(t=np.array(t_hist), load=np.array(load_hist), ref=np.array(ref_hist),
                 dpos=[np.array(p) for p in dpos],
@@ -226,7 +303,35 @@ def collect():
                 prnorm=[np.array(v) for v in prnorm],
                 lam=[np.array(l) for l in lam_hist])
     return (np.asarray(X_rows, dtype=np.float32),
-            np.asarray(Y_rows, dtype=np.float32), hist)
+            np.asarray(Y_rows, dtype=np.float32),
+            np.asarray(H_rows, dtype=np.float32),
+            np.asarray(bin_rows, dtype=np.int64), hist)
+
+
+def collect(n_traj=N_TRAJ, include_default=True):
+    """Collect the BC dataset over n_traj GENERALIZED trajectories (from trajectories.train_set),
+    plus (include_default) the original DEFAULT straight-line trajectory as an anchor. Reuses ONE
+    env + ONE agent (expensive CasADi solver) across all episodes."""
+    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
+    env.reset()
+    J, Bb, m, L0 = read_params(env)
+    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
+
+    trajs = list(train_set(n_traj))
+    if include_default:
+        trajs.insert(0, (None, None))          # traj=None -> original straight-line trajectory
+    X_all, Y_all, H_all, bin_all, last_hist = [], [], [], [], None
+    for k, (traj, p) in enumerate(trajs):
+        Xk, Yk, Hk, bk, last_hist = rollout(env, agent, Bb, L0, traj)
+        X_all.append(Xk); Y_all.append(Yk); H_all.append(Hk); bin_all.append(bk)
+        if traj is None:
+            print(f"  traj {k + 1:>3}/{len(trajs)}  DEFAULT straight-line          steps={len(Xk)}")
+        else:
+            print(f"  traj {k + 1:>3}/{len(trajs)}  dpos={np.round(p['pos_delta'], 2)} "
+                  f"drot(deg)={np.round(np.rad2deg(p['rot_delta']), 1)}  steps={len(Xk)}")
+    env.close()
+    return (np.concatenate(X_all), np.concatenate(Y_all),
+            np.concatenate(H_all), np.concatenate(bin_all), last_hist)
 
 
 def plot(hist):
@@ -269,9 +374,12 @@ def plot(hist):
 
 
 if __name__ == "__main__":
-    X, Y, hist = collect()
-    np.savez(OUT, X=X, Y=Y)
+    X, Y, H, bins, hist = collect()
+    np.savez(OUT, X=X, Y=Y, H=H, bins=bins)
     print(f"saved {OUT}   steps={len(X)}   X {X.shape}  Y {Y.shape}")
+    for b, name in BIN_NAMES.items():
+        m = bins == b
+        print(f"  bin {b} {name:>10}: {m.sum():>7} steps  mean hardness {H[m].mean() if m.any() else 0:.4f}")
     print(f"  input = clock(14) + pR_dot({3*N}) + lambda_prev({N})  ->  lambda[{N}]")
     print(f"  lambda range [{Y.min():.3f}, {Y.max():.3f}]  std {Y.std():.3f}")
     for i in range(N):

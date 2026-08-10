@@ -1,5 +1,6 @@
 import numpy as np
 from optimizer import skew
+from scipy.spatial.transform import Rotation as R_tool
 
 
 def get_reference_trajectory(t, traj=None):
@@ -67,28 +68,74 @@ def get_reference_trajectory(t, traj=None):
     return p_Ld, v_Ld, R_Ld, omega_Ld
 
 
-def make_quintic_pose(pos_delta, ramp=10.0, hold=5.0, base_pos=(0.0, 0.0, 1.39)):
-    """Build a rest-to-rest QUINTIC position trajectory (paper Fig.10 family, arXiv p2025ut).
-
+   
+def make_quintic_pose(
+    pos_delta, 
+    rot_delta=(0.0, 0.0, 0.0), 
+    ramp=10.0, 
+    hold=5.0, 
+    base_pos=(0.0, 0.0, 1.39),
+    base_R=np.eye(3)
+):
+    """Build a rest-to-rest QUINTIC 6D trajectory (position + rotation).
+    (paper Fig.10 family, arXiv p2025ut).
+    
     The load moves from base_pos by pos_delta (3,) over [hold, hold+ramp] following a 5th-order
     polynomial (zero velocity AND acceleration at both ends -> smooth, gentle), then holds. Returns
-    a callable traj(t) -> (p_Ld, v_Ld, R_Ld=I, omega_Ld=0). Orientation (roll/pitch quintic) is
-    deferred to the 6D step; for now the load translates without rotating (matches today's R_Ld=I).
+    a callable traj(t)
+    
+    Parameters
+    ----------
+    pos_delta : array-like (3,)
+        Position displacement vector [dx, dy, dz] in meters.
+    rot_delta : array-like (3,)
+        Rotation vector [rx, ry, rz] in radians (magnitude = total angle, direction = axis).
+        Can also pass small Roll-Pitch-Yaw angles here.
+    ramp : float
+        Transition duration in seconds.
+    hold : float
+        Initial hold time in seconds.
+    base_pos : array-like (3,)
+        Starting 3D position.
+    base_R : array-like (3, 3)
+        Starting 3x3 rotation matrix.
+        
+    Returns
+    -------
+    traj : callable
+        traj(t) -> (p_Ld, v_Ld, R_Ld, omega_Ld)
     """
-    base = np.asarray(base_pos, dtype=float)
-    delta = np.asarray(pos_delta, dtype=float)
-    R_I = np.eye(3)
+    base_p = np.asarray(base_pos, dtype=float)
+    delta_p = np.asarray(pos_delta, dtype=float)
+    
+    base_R = np.asarray(base_R, dtype=float)
+    delta_r = np.asarray(rot_delta, dtype=float)
 
     def traj(t):
         if t <= hold:
-            return base.copy(), np.zeros(3), R_I, np.zeros(3)
+            return base_p.copy(), np.zeros(3), base_R.copy(), np.zeros(3)
+            
         u = min((t - hold) / ramp, 1.0)
-        s = 10 * u**3 - 15 * u**4 + 6 * u**5              # position profile 0->1
-        sd = (30 * u**2 - 60 * u**3 + 30 * u**4) / ramp   # velocity profile (feedforward)
-        return base + delta * s, delta * sd, R_I, np.zeros(3)
+        
+        # Quintic progress fraction s (0 -> 1) and derivative sd
+        s = 10 * u**3 - 15 * u**4 + 6 * u**5
+        sd = (30 * u**2 - 60 * u**3 + 30 * u**4) / ramp
+        
+        # 1. Translational trajectory
+        p_Ld = base_p + delta_p * s
+        v_Ld = delta_p * sd
+        
+        # 2. Rotational trajectory
+        # Scale the rotation vector by progress s
+        rot_curr = R_tool.from_rotvec(delta_r * s)
+        R_Ld = base_R @ rot_curr.as_matrix()
+        
+        # Body/Local Angular velocity is the derivative of rotation vector
+        omega_Ld = delta_r * sd
+        
+        return p_Ld, v_Ld, R_Ld, omega_Ld
 
     return traj
-
 
 def vee(S):
     """
