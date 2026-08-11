@@ -51,12 +51,15 @@ INCLUDE_DEFAULT = True   # also roll out the ORIGINAL straight-line trajectory e
 MAX_AGG = 150_000    # cap the persisted aggregate: hardness-weighted eviction keeps it bounded
                      #   as trajectories scale (cap_indices), so data can't explode.
 WARM_START = True    # retrain from the PREVIOUS net (not fresh) each iter -> fewer epochs suffice.
+USE_CURATION = False  # True = hardness + recency + bin curation. False = UNIFORM baseline (train on
+                     #   the whole aggregate, RANDOM eviction) -> A/B test whether curation is the
+                     #   G0-amplifier poisoning the near-boundary iters (buzz jumping at fixed beta).
 
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.18,0.15] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
-EPOCHS = 50          # fewer epochs: warm-started from the previous net each iter (WARM_START)
+BETAS = [0.16,0.12] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+EPOCHS = 150          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
 VAL_FRAC = 0.2
@@ -284,12 +287,22 @@ def main():
             if traj is None:
                 def_diag = diag                      # the straight-line anchor: the cross-iter reference
 
-        # Cap the persisted aggregate (hardness x recency eviction) so it can't explode.
-        keep = cap_indices(D_H, D_bin, MAX_AGG, curate_rng, weights=recency_weights(D_age))
+        # Cap the persisted aggregate so it can't explode. USE_CURATION: hardness x recency
+        # eviction; else UNIFORM random eviction (the A/B baseline).
+        if USE_CURATION:
+            keep = cap_indices(D_H, D_bin, MAX_AGG, curate_rng, weights=recency_weights(D_age))
+        elif len(D_X) > MAX_AGG:
+            keep = curate_rng.permutation(len(D_X))[:MAX_AGG]
+        else:
+            keep = np.arange(len(D_X))
         D_X, D_Y, D_H, D_bin, D_age = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep], D_age[keep]
 
-        # Curate the TRAINING subset: graduated-decile keep, per-bin hardness, recency-biased.
-        mask = curate(D_X, D_Y, D_H, D_bin, curate_rng, weights=recency_weights(D_age))
+        # Training subset: USE_CURATION -> graduated-decile keep (per-bin hardness, recency-biased);
+        # else UNIFORM (train on the whole aggregate).
+        if USE_CURATION:
+            mask = curate(D_X, D_Y, D_H, D_bin, curate_rng, weights=recency_weights(D_age))
+        else:
+            mask = np.ones(len(D_X), dtype=bool)
         init = policy.state_dict() if WARM_START else None
         state, om, os_, best_va, var_lam = train(D_X[mask], D_Y[mask], init_state=init)
         policy = Actor(obs_dim=D_X.shape[1], act_dim=N, hidden=hidden)

@@ -31,7 +31,7 @@ POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, 
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
                                                #   July non-analytic net -> spurious "held-out garbage".
 
-EVAL_HELDOUT = False   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
+EVAL_HELDOUT = True   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
                       #   on); False -> single run on the default straight-line trajectory (with plots).
 HELDOUT_N = 10        # number of held-out trajectories to evaluate
 
