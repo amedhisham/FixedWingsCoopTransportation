@@ -15,7 +15,7 @@ from networks import Actor
 from collect_prdot_data import SUFFIX, PRDOT_HIDDEN, curate, BIN_NAMES   # reconstruction mode + capacity + curation
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EPOCHS = 300
+EPOCHS = 50
 BATCH = 256
 LR = 1e-3
 VAL_FRAC = 0.2

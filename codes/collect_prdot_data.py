@@ -57,7 +57,15 @@ PRDOT_HIDDEN = (256, 256)     # was (128,128); loaders read "hidden" from the ck
 V_LO = 0.05          # ref speed below this -> loiter (m/s)
 A_HI = 0.02          # ref |accel| above this -> transition (m/s^2)
 BIN_NAMES = {0: "loiter", 1: "cruise", 2: "transition"}
-P_MIN = 0.2          # per-bin keep floor (even the easiest bin keeps this x the decile weight)
+P_MIN = 0.15         # TRUE overall keep floor per bin: no activity regime, however easy, drops
+                     #   below this fraction (diversity guarantee). p_bin IS the bin's kept share.
+RECENCY_GAMMA = 0.85 # DAgger recency: a sample from g iters ago is weighted gamma**g -> recent
+                     #   (more on-policy, lower-beta) corrections outweigh stale ones (1.0 = off).
+
+# Decile weights normalized to MEAN 1, so multiplying by p_bin makes p_bin the bin's overall kept
+# fraction (not p_bin*0.55). Shape kept: hardest tenth ~1.82x the mean, easiest ~0.18x.
+_DECILE_W = (np.arange(10) + 1) / 10.0
+_DECILE_NORM = _DECILE_W / _DECILE_W.mean()          # mean 1.0, range [0.18, 1.82]
 
 
 def activity_bin(speed, accel):
@@ -69,14 +77,22 @@ def activity_bin(speed, accel):
     return 1
 
 
-def keep_probs(H, bins, p_min=P_MIN):
-    """Two-level keep-probability per sample (the user's graduated-decile scheme).
+def recency_weights(ages, gamma=RECENCY_GAMMA):
+    """gamma**(newest_age - age) per sample: recent DAgger iters ~1, old ones decay toward 0."""
+    ages = np.asarray(ages, dtype=float)
+    if len(ages) == 0:
+        return ages
+    return gamma ** (ages.max() - ages)
 
-    Level 1 (bin): p_bin = max(p_min, mean_hardness(bin) / max_bin_mean_hardness)  -> harder
-      activity regimes keep a larger share.
-    Level 2 (within bin): rank by hardness into 10 deciles, decile d (0=easiest) keeps
-      weight (d+1)/10 -> 10% of the easiest tenth ... 100% of the hardest tenth.
-    Final prob = p_bin * (d+1)/10. Returns float array in [0,1].
+
+def keep_probs(H, bins, p_min=P_MIN):
+    """Two-level keep-probability per sample (the graduated-decile scheme).
+
+    Level 1 (bin): p_bin = max(p_min, mean_hardness(bin) / max_bin_mean_hardness) -> the bin's
+      OVERALL kept fraction; harder activity regimes keep more, none below p_min.
+    Level 2 (within bin): rank by hardness into deciles; decile d keeps p_bin * _DECILE_NORM[d]
+      (mean-1 normalized), so the bin's mean keep == p_bin while the hardest tenth is favored.
+    Returns float array in [0,1].
     """
     H = np.asarray(H, dtype=float)
     bins = np.asarray(bins)
@@ -91,24 +107,29 @@ def keep_probs(H, bins, p_min=P_MIN):
         order = np.argsort(H[idx])                    # ascending: easy -> hard
         dec = np.empty(n, dtype=int)
         dec[order] = (np.arange(n) * 10) // max(n, 1)  # 0..9
-        probs[idx] = p_bin * (dec + 1) / 10.0
+        probs[idx] = np.clip(p_bin * _DECILE_NORM[dec], 0.0, 1.0)
     return probs
 
 
-def curate(X, Y, H, bins, rng, p_min=P_MIN):
-    """Stochastic keep-mask from keep_probs -> a hardness-weighted, bin-diverse subset."""
+def curate(X, Y, H, bins, rng, p_min=P_MIN, weights=None):
+    """Stochastic keep-mask from keep_probs (optionally x recency weights) -> a hardness-weighted,
+    bin-diverse, recency-biased subset."""
     p = keep_probs(H, bins, p_min)
-    mask = rng.random(len(p)) < p
-    return mask
+    if weights is not None:
+        p = np.clip(p * weights, 0.0, 1.0)
+    return rng.random(len(p)) < p
 
 
-def cap_indices(H, bins, max_n, rng, p_min=P_MIN):
-    """Indices to RETAIN so the aggregate stays <= max_n: highest keep-prob wins (ties broken
-    randomly, preserving within-decile diversity). Returns all indices if already under cap."""
+def cap_indices(H, bins, max_n, rng, p_min=P_MIN, weights=None):
+    """Indices to RETAIN so the aggregate stays <= max_n: highest keep-prob (x recency) wins, ties
+    broken randomly (within-decile diversity). Returns all indices if already under cap."""
     n = len(H)
     if n <= max_n:
         return np.arange(n)
-    score = keep_probs(H, bins, p_min) + 1e-6 * rng.random(n)   # noise = random tie-break
+    score = keep_probs(H, bins, p_min)
+    if weights is not None:
+        score = score * weights
+    score = score + 1e-6 * rng.random(n)             # noise = random tie-break
     return np.argsort(score)[::-1][:max_n]
 
 # Reconstruction low-pass: OUR estimate of the drone LLC time const (MUST match the

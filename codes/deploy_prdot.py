@@ -44,7 +44,7 @@ HELDOUT_N = 10        # number of held-out trajectories to evaluate
 # buzz 0.31->0.016, pR_dot max 105->19. tau ~ 0.05-0.1 (lighter protects loiter vmin).
 # DEMOTED to a final augment (post-hoc filtering detunes the loiter -> wacky lambda); the
 # primary buzz fix is better/bigger training + hardness curation. Re-enable only trained-in-loop.
-LAM_LP_TAU = None
+LAM_LP_TAU = 0.005
 
 
 def load_policy(path=POLICY):
