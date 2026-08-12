@@ -50,6 +50,15 @@ LAM0 = 1.2 * np.cos(np.asarray(PHASES))
 # ---- F1 policy capacity (shared by train_prdot / dagger_prdot; saved in ckpts) --------
 PRDOT_HIDDEN = (256, 256)     # was (128,128); loaders read "hidden" from the ckpt
 
+# ---- IN-LOOP output-lambda EMA (shared by dagger_prdot rollout AND deploy_prdot) -------
+# Soft warm-start CONTINUITY: applied_lambda = a*raw + (1-a)*applied_prev, a = DT/(tau+DT).
+# The optimizer stays stable in the same reconstructed-vR loop because its warm-started solve
+# forbids lambda from jumping; the memoryless net lost that, so we re-impose it here. Trained
+# IN the DAgger rollout (not bolted on) so there's no train/deploy mismatch. Light (tau=0.01 ->
+# a=0.5) = minimal lag, just damps step-to-step jitter (the div-by-dt amplifier's worst band).
+# None = off; raise tau only if it doesn't stabilize.
+LAM_LP_TAU = 0.01
+
 # ---- ACTIVITY bins + two-level HARDNESS curation (shared by collect / train / dagger) --
 # Semantic bins from the REFERENCE kinematics (what the load is doing), so curation can keep
 # a diverse mix and weight harder regimes more. Bins: 0 loiter (parked), 1 cruise (steady

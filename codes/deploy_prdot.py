@@ -31,7 +31,7 @@ POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, 
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
                                                #   July non-analytic net -> spurious "held-out garbage".
 
-EVAL_HELDOUT = True   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
+EVAL_HELDOUT = False   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
                       #   on); False -> single run on the default straight-line trajectory (with plots).
 HELDOUT_N = 10        # number of held-out trajectories to evaluate
 
@@ -44,7 +44,7 @@ HELDOUT_N = 10        # number of held-out trajectories to evaluate
 # buzz 0.31->0.016, pR_dot max 105->19. tau ~ 0.05-0.1 (lighter protects loiter vmin).
 # DEMOTED to a final augment (post-hoc filtering detunes the loiter -> wacky lambda); the
 # primary buzz fix is better/bigger training + hardness curation. Re-enable only trained-in-loop.
-LAM_LP_TAU = 0.005
+LAM_LP_TAU = 0.01
 
 
 def load_policy(path=POLICY):

@@ -36,7 +36,7 @@ from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from collect_prdot_data import (Reconstructor, build_input, LAM0, SUFFIX,
                                  PRDOT_HIDDEN, activity_bin, curate, cap_indices,
-                                 recency_weights, BIN_NAMES)
+                                 recency_weights, BIN_NAMES, LAM_LP_TAU)
 from controller import get_reference_trajectory
 from deploy_prdot import main as deploy_prdot_main
 from trajectories import train_set, TRAIN_SEED
@@ -58,7 +58,7 @@ USE_CURATION = False  # True = hardness + recency + bin curation. False = UNIFOR
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.16,0.12] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.0,0.0,0.0,0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
 EPOCHS = 150          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
@@ -83,8 +83,10 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
     agent.reset()
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
-    prev_lam = LAM0.copy()          # APPLIED lambda_{t-1}
+    prev_lam = LAM0.copy()          # APPLIED lambda_{t-1} (post-EMA)
     prev_vLd = None                 # ref velocity_{t-1} (accel -> activity bin)
+    lam_lp = LAM0.copy()            # in-loop EMA state (soft warm-start continuity)
+    lam_a = None if LAM_LP_TAU is None else DT / (LAM_LP_TAU + DT)
     recon = Reconstructor(Bb, L0, DT)
 
     X_rows, Y_rows, H_rows, bin_rows = [], [], [], []
@@ -115,7 +117,15 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
 
         # Rollout driven by the MIX; label is the pure EXPERT.
         lam_mixed = beta * lam_exp + (1.0 - beta) * lam_pol
-        f_full, _ = cable_force_calculation(R, Bb, w_d, lam_mixed, N)
+        # IN-LOOP EMA: smooth the APPLIED lambda (soft warm-start continuity). The smoothed
+        # lambda drives the plant AND feeds back (recon/prev_lam) -> the net trains against the
+        # SAME filtered feedback it sees at deploy (deploy_prdot applies the identical EMA).
+        if lam_a is not None:
+            lam_lp = lam_a * lam_mixed + (1.0 - lam_a) * lam_lp
+            lam_applied = lam_lp
+        else:
+            lam_applied = lam_mixed
+        f_full, _ = cable_force_calculation(R, Bb, w_d, lam_applied, N)
 
         # Hardness = DAgger disagreement ||expert - policy|| (the informative samples);
         # activity bin from the reference kinematics (speed + finite-diff accel).
@@ -140,9 +150,9 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
         prev_f = ff.copy()
         obs42, *_ = env.step(np.concatenate([ff, deriv]))
 
-        # Roll histories with the APPLIED (mixed) lambda.
-        recon.roll(lam_mixed)
-        prev_lam = lam_mixed.copy()
+        # Roll histories with the APPLIED (EMA-smoothed mixed) lambda.
+        recon.roll(lam_applied)
+        prev_lam = lam_applied.copy()
         t += DT
 
     lam_pol_hist = [np.array(l) for l in lam_pol_hist]
