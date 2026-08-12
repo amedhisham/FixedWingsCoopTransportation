@@ -59,7 +59,7 @@ USE_CURATION = False  # True = hardness + recency + bin curation. False = UNIFOR
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
 BETAS = [0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
-EPOCHS = 150          # fewer epochs: warm-started from the previous net each iter (WARM_START)
+EPOCHS = 250          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
 VAL_FRAC = 0.2
