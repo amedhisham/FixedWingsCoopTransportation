@@ -30,7 +30,7 @@ from classical_agent import ClassicalAgent
 from optimizer import calculate_grasp_and_nullspace, cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from collect_il_data import clock_features, read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from trajectories import train_set
+from trajectories import train_set, custom_set
 
 BYPASS_OPT = False   # adaptive optimizer (the real sweeping target)
 N_TRAJ = 50          # GENERALIZATION: number of sampled quintic-pose trajectories to collect over
@@ -347,7 +347,7 @@ def collect(n_traj=N_TRAJ, include_default=True):
     J, Bb, m, L0 = read_params(env)
     agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
 
-    trajs = list(train_set(n_traj))
+    trajs = custom_set() + list(train_set(n_traj))   # 5 solver-engaging customs + n_traj quintics
     if include_default:
         trajs.insert(0, (None, None))          # traj=None -> original straight-line trajectory
     X_all, Y_all, H_all, bin_all, last_hist = [], [], [], [], None
@@ -356,6 +356,8 @@ def collect(n_traj=N_TRAJ, include_default=True):
         X_all.append(Xk); Y_all.append(Yk); H_all.append(Hk); bin_all.append(bk)
         if traj is None:
             print(f"  traj {k + 1:>3}/{len(trajs)}  DEFAULT straight-line          steps={len(Xk)}")
+        elif p.get("kind") == "custom":
+            print(f"  traj {k + 1:>3}/{len(trajs)}  CUSTOM {p['name']:<7} solver-engaging  steps={len(Xk)}")
         else:
             print(f"  traj {k + 1:>3}/{len(trajs)}  dpos={np.round(p['pos_delta'], 2)} "
                   f"drot(deg)={np.round(np.rad2deg(p['rot_delta']), 1)}  steps={len(Xk)}")

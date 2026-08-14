@@ -25,15 +25,22 @@ from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX
-from trajectories import heldout_set
+from trajectories import heldout_set, showcase_set
 
 POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
                                                #   July non-analytic net -> spurious "held-out garbage".
 
-EVAL_HELDOUT = False   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
+EVAL_HELDOUT = True   # __main__: True -> generalization test over HELD-OUT trajectories (never trained
                       #   on); False -> single run on the default straight-line trajectory (with plots).
 HELDOUT_N = 10        # number of held-out trajectories to evaluate
+
+SHOWCASE = "short"       # __main__ (overrides EVAL_HELDOUT): None | "short" | "long". Runs the demo
+                      #   trajectories (trajectories.showcase_set) at their OWN lengths -> shows the
+                      #   net handles any horizon. "short"=compact 25s, "long"=35s training-like.
+SHOWCASE_IDX = 1   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
+                      #   (0=line, 1..M=quintics) — symmetric with deploy_compare.SHOWCASE_IDX.
+SHOWCASE_M = 3        # quintics per showcase preset
 
 # OUTPUT-side lambda low-pass (None = off). Applied lambda = a*lam_raw + (1-a)*applied_prev,
 # a = DT/(tau+DT); the SMOOTHED lambda drives the force AND feeds back as lambda_{t-1}. Kills
@@ -55,9 +62,12 @@ def load_policy(path=POLICY):
     return net, ckpt["obs_mean"], ckpt["obs_std"]
 
 
-def run_episode(net, om, os_, env, agent, Bb, L0, traj=None):
+def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
     """One closed-loop policy episode on reference `traj` (None -> default straight line).
-    env + agent are REUSED across trajectories (reset here). Returns a history/metrics dict."""
+    env + agent are REUSED across trajectories (reset here). Returns a history/metrics dict.
+    `t_end` overrides the loop length (default T_END) so a demo can run ANY horizon (env's
+    end_time must be >= t_end)."""
+    t_end = T_END if t_end is None else t_end
     obs42, _ = env.reset()
     agent.reset()
 
@@ -73,7 +83,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None):
 
     t = 0.0
     loop_t0 = time.perf_counter()
-    while t < T_END - 1e-9:
+    while t < t_end - 1e-9:
         pos = obs42[0:3]
         R = np.round(obs42[3:12].reshape((3, 3), order="C"), 6)
         vel, angvel = obs42[12:15], obs42[15:18]
@@ -204,8 +214,32 @@ def evaluate_heldout(policy_path=POLICY, M=HELDOUT_N, plot_first=True):
         plt.show()
 
 
+def run_showcase(kind=SHOWCASE, M=SHOWCASE_M, policy_path=POLICY):
+    """Run the net on the demo trajectories (any length) and plot each — thesis showcase.
+    ONE env at end_time=T_END (the max horizon); each traj's own t_end just bounds the loop."""
+    net, om, os_ = load_policy(policy_path)
+    env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=T_END)
+    env.reset()
+    J, Bb, m, L0 = read_params(env)
+    agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
+
+    demos = showcase_set(kind, M)
+    if SHOWCASE_IDX is not None:
+        demos = [demos[SHOWCASE_IDX]]          # isolate ONE (0=line, 1..M=quintics)
+    print(f"SHOWCASE '{kind}': net (in-loop EMA) on demo trajectories — any horizon\n"
+          f"{'label':>16}  {'t_end':>5}  {'track_mean':>10}  {'track_max':>9}  {'vmin':>6}")
+    for label, traj, t_end in demos:
+        h = run_episode(net, om, os_, env, agent, Bb, L0, traj, t_end=t_end)
+        print(f"{label:>16}  {t_end:>5.0f}  {h['track_mean']:>10.4f}  {h['track_max']:>9.4f}  {h['vmin']:>6.3f}")
+        plot_episode(h, title=f"{label}  (t_end={t_end:.0f}s)")
+    env.close()
+    plt.show()
+
+
 if __name__ == "__main__":
-    if EVAL_HELDOUT:
+    if SHOWCASE is not None:
+        run_showcase()
+    elif EVAL_HELDOUT:
         evaluate_heldout()
     else:
         main()

@@ -137,6 +137,48 @@ def make_quintic_pose(
 
     return traj
 
+
+def make_linear_move(
+    vel,
+    hold=5.0,
+    move_dur=25.0,
+    base_pos=(0.0, 0.0, 1.39),
+    base_R=np.eye(3),
+):
+    """Piecewise CONSTANT-VELOCITY move — generalizes the default straight-line (get_reference_
+    trajectory, traj=None) to any direction and timing.
+
+    Holds at base_pos over [0, hold], cruises at `vel` (3,) over [hold, hold+move_dur], then holds.
+    The velocity STEP at both ends is the harsh transient that ENGAGES the deadbanded optimizer
+    (unlike the gentle rest-to-rest quintics, whose zero-vel/zero-accel ends rarely stress the
+    eps-floor). Rotation is fixed (base_R, omega=0) — direction/timing variety is the point here,
+    not attitude.
+
+    Parameters
+    ----------
+    vel : array-like (3,)      cruise velocity [vx, vy, vz] in m/s.
+    hold : float               initial hold (s).
+    move_dur : float           cruise duration (s); movement spans [hold, hold+move_dur].
+    base_pos, base_R           start pose.
+    """
+    base_p = np.asarray(base_pos, dtype=float)
+    v = np.asarray(vel, dtype=float)
+    base_R = np.asarray(base_R, dtype=float)
+
+    def traj(t):
+        if t <= hold:
+            tau, moving = 0.0, False
+        elif t <= hold + move_dur:
+            tau, moving = t - hold, True
+        else:
+            tau, moving = move_dur, False
+        p_Ld = base_p + v * tau
+        v_Ld = v.copy() if moving else np.zeros(3)
+        return p_Ld, v_Ld, base_R.copy(), np.zeros(3)
+
+    return traj
+
+
 def vee(S):
     """
     The vee operator (inverse of the skew-symmetric operator).

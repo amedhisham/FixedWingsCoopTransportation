@@ -18,7 +18,9 @@ from fmu_plant_env import FMUPlantEnv
 from classical_agent import ClassicalAgent
 
 N = 4
-DT, T_END = 0.01, 25.0
+DT, T_END = 0.01, 35.0   # 25 -> 35 s: room for movement to ~t=30 (customs) / U[20,30] (quintics),
+                         #   so there's no long pure-loiter tail for the net to memorize.
+                         #   Single source: everything imports T_END from here (incl. F2 scripts).
 EPS = 0.25
 PHASES = np.array([0.0, np.pi / 2, 0.0, np.pi / 2])
 LLC_ALPHA = DT / (0.2 + DT)

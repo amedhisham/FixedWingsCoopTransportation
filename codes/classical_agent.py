@@ -48,6 +48,8 @@ class ClassicalAgent:
         xi0=2.0, A0=1.2,       # initial (frequency, amplitude) of the sinusoids
         delta_xi=0.05, delta_A=0.05,   # per-step monotone increase caps
         w_pos=0.0, w_vel=0.0,  # optimizer cost weights (only used if building solver)
+        solve_below=0.3,       # DEADBAND: only run the solver when min||v_Ri|| <= this (eps+margin);
+                               #   above it the floor has slack -> hold xi/A (no solve, no drift)
     ):
         self.n = n_carriers
         self.dt = step_size
@@ -60,6 +62,7 @@ class ClassicalAgent:
 
         self.xi0, self.A0 = xi0, A0
         self.delta_xi, self.delta_A = delta_xi, delta_A
+        self.solve_below = solve_below
 
         # PID gains, copied verbatim from controller.wrench_controller.
         self.Kp = 5.0 * np.eye(3)
@@ -99,6 +102,11 @@ class ClassicalAgent:
         self.prev_w_d = None
         self.prev_G_pinv = None
         self.prev_N = None
+
+        # Diagnostic: the optimizer's ANALYTIC ||v_Ri|| (the epsilon-constraint values,
+        # NOT the plant velocity). Set each optimize() call so callers can read it.
+        self.last_vRi = np.full(self.n, np.nan)
+        self.solved = False          # did the last optimize() run the solver (True) or hold (False)?
 
     # ------------------------------------------------------------------ #
     #  Outer-loop wrench controller (eqs. 14-15)                          #
@@ -152,9 +160,32 @@ class ClassicalAgent:
 
         lbg = [self.epsilon ** 2] * self.n
 
+        # DEADBAND: analytic ||v_Ri|| at the CURRENT sinusoid (prev_x). While the eps-floor has
+        # margin (min > solve_below), DON'T solve -> hold prev_x. Removes the monotone-ratchet
+        # drift (IPOPT tolerance rectified by the only-increase bound crept xi/A up even with the
+        # constraint slack) and skips the CasADi solve on easy states. Matches optimizer.py Eq 22.
+        lam_now = self.prev_x[1] * np.cos(self.prev_x[0] * t + self.phases)
+        lam_dot_now = -self.prev_x[1] * self.prev_x[0] * np.sin(self.prev_x[0] * t + self.phases)
+        f_now = G_pinv @ w_d + N @ lam_now
+        vRi_now = np.empty(self.n)
+        for i in range(self.n):
+            f_i = f_now[3 * i: 3 * i + 3]
+            T_i = np.sqrt(f_i @ f_i + 1e-6)
+            q_i = f_i / T_i
+            Pi_i = np.eye(3) - np.outer(q_i, q_i)
+            g_i = N_dot[3 * i: 3 * i + 3] @ lam_now + N[3 * i: 3 * i + 3] @ lam_dot_now
+            v_Ri = v_L_stack[3 * i: 3 * i + 3] + (self.L0 / T_i) * Pi_i @ (e_total[3 * i: 3 * i + 3] + g_i)
+            vRi_now[i] = np.linalg.norm(v_Ri)
+
         if bypass:
             opt_x = np.array([2.0, 1.2])
+            self.solved = False
+        elif vRi_now.min() > self.solve_below:
+            opt_x = self.prev_x.copy()          # eps-floor has margin -> hold xi/A (no solve, no drift)
+            self.last_vRi = vRi_now
+            self.solved = False
         else:
+            self.solved = True
             # xi and A may only increase (monotone), capped per step (see optimizer.py).
             lbx = [self.prev_x[0], self.prev_x[1]]
             ubx = [self.prev_x[0] + self.delta_xi, self.prev_x[1] + self.delta_A]
@@ -167,6 +198,9 @@ class ClassicalAgent:
                 opt_x = np.array(res["x"]).flatten()
             else:
                 opt_x = self.prev_x.copy()
+
+            # Constraint values g_i = ||v_Ri||^2 (analytic, Eq 22) at the solution -> ||v_Ri||.
+            self.last_vRi = np.sqrt(np.maximum(np.array(res["g"]).flatten(), 0.0))
 
         opt_xi, opt_A = opt_x[0], opt_x[1]
 

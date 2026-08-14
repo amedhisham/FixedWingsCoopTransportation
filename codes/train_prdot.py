@@ -85,7 +85,7 @@ def fit(X, Y):
     return net, xm.astype(np.float32), xs.astype(np.float32)
 
 
-CURATE_BC = True   # drop the persistence-nailed bulk (see collect_prdot_data.keep_probs)
+CURATE_BC = False   # drop the persistence-nailed bulk (see collect_prdot_data.keep_probs)
 
 
 def main():

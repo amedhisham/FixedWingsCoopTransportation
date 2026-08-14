@@ -35,11 +35,10 @@ from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from collect_prdot_data import (Reconstructor, build_input, LAM0, SUFFIX,
-                                 PRDOT_HIDDEN, activity_bin, curate, cap_indices,
-                                 recency_weights, BIN_NAMES, LAM_LP_TAU)
+                                 PRDOT_HIDDEN, activity_bin, LAM_LP_TAU)
 from controller import get_reference_trajectory
 from deploy_prdot import main as deploy_prdot_main
-from trajectories import train_set, TRAIN_SEED
+from trajectories import train_set, custom_set, TRAIN_SEED
 import os
 
 BYPASS_OPT = False   # adaptive optimizer (matches prdot_dataset.npz)
@@ -48,17 +47,21 @@ TRAJ_PER_ITER = 30   # GENERALIZATION: closed-loop rollouts per DAgger iter, eac
                      #   sampled quintic-pose trajectory (was 10). More coverage per iter.
 INCLUDE_DEFAULT = True   # also roll out the ORIGINAL straight-line trajectory each iter (anchor),
                          #   matching collect_prdot_data's include_default.
-MAX_AGG = 150_000    # cap the persisted aggregate: hardness-weighted eviction keeps it bounded
-                     #   as trajectories scale (cap_indices), so data can't explode.
+MAX_AGG = 250_000    # cap the persisted POOL of OLD data (what we sample from). ~2 iters of new data
+                     #   (126k/iter at T_END=35). Eviction: hardest-first (USE_CURATION) else uniform.
+TRAIN_BUDGET = 200_000   # per-iter TRAINING set size. We train on ALL of this iter's new data FULLY,
+                     #   then TOP UP with a sample of the OLD pool to reach this budget (new is NEVER
+                     #   masked away). Was: concat old+new, evict, train on the WHOLE 150k -> the
+                     #   "very long training + new data could be evicted" disaster.
 WARM_START = True    # retrain from the PREVIOUS net (not fresh) each iter -> fewer epochs suffice.
-USE_CURATION = False  # True = hardness + recency + bin curation. False = UNIFORM baseline (train on
-                     #   the whole aggregate, RANDOM eviction) -> A/B test whether curation is the
-                     #   G0-amplifier poisoning the near-boundary iters (buzz jumping at fixed beta).
+USE_CURATION = False  # False = UNIFORM (random old-sample + random eviction). True = HARDEST-first,
+                     #   deterministic top-K (interim; the bin-quota / separate-filters rebuild is
+                     #   pending — see memory f1-curate-redesign). Either way: new data trained FULLY.
 
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
 EPOCHS = 250          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
@@ -283,48 +286,54 @@ def main():
         # Seed off the GLOBAL generation (gen0 + k - 1 = the sample age), so staged runs CONTINUE
         # the trajectory stream instead of re-drawing the same set at each run's first iter.
         batch = list(train_set(TRAJ_PER_ITER, seed=TRAIN_SEED + gen0 + k - 1))
+        batch = custom_set() + batch           # 5 solver-engaging customs every iter (fixed set)
         if INCLUDE_DEFAULT:
             batch.insert(0, (None, None))      # anchor: closed-loop correction on the straight line too
+        # Collect THIS iter's new data SEPARATELY from the persisted pool (D_*). We train on all of
+        # it FULLY; the pool is only a reservoir we top up the training set from.
+        nX, nY, nH, nbin = [], [], [], []
         buzz_k, vmin_k, track_k, def_diag = [], [], [], None
         for traj, _p in batch:
             new_X, new_Y, new_H, new_bin, diag = rollout(policy, om, os_, beta, env, agent, Bb, L0, traj)
-            D_X = np.concatenate([D_X, new_X], axis=0)
-            D_Y = np.concatenate([D_Y, new_Y], axis=0)
-            D_H = np.concatenate([D_H, new_H], axis=0)
-            D_bin = np.concatenate([D_bin, new_bin], axis=0)
-            D_age = np.concatenate([D_age, np.full(len(new_X), gen0 + k - 1, np.int64)], axis=0)
+            nX.append(new_X); nY.append(new_Y); nH.append(new_H); nbin.append(new_bin)
             buzz_k.append(diag["buzz"]); vmin_k.append(diag["vmin"]); track_k.append(diag["track_mean"])
             if traj is None:
                 def_diag = diag                      # the straight-line anchor: the cross-iter reference
+        nX = np.concatenate(nX); nY = np.concatenate(nY)
+        nH = np.concatenate(nH); nbin = np.concatenate(nbin)
 
-        # Cap the persisted aggregate so it can't explode. USE_CURATION: hardness x recency
-        # eviction; else UNIFORM random eviction (the A/B baseline).
-        if USE_CURATION:
-            keep = cap_indices(D_H, D_bin, MAX_AGG, curate_rng, weights=recency_weights(D_age))
-        elif len(D_X) > MAX_AGG:
-            keep = curate_rng.permutation(len(D_X))[:MAX_AGG]
+        # TRAIN SET = ALL new data (FULLY) + a sample of the OLD pool to reach TRAIN_BUDGET. New is
+        # NEVER subsampled. Old-sample: hardest-first (USE_CURATION) else uniform. (No more "train on
+        # the whole 150k aggregate" — that was the very-long-training / evicted-new-data disaster.)
+        n_old = max(0, TRAIN_BUDGET - len(nX))
+        if len(D_X) <= n_old:
+            old_idx = np.arange(len(D_X))
+        elif USE_CURATION:
+            old_idx = np.argsort(-D_H)[:n_old]                     # HARDEST-first, deterministic
         else:
-            keep = np.arange(len(D_X))
-        D_X, D_Y, D_H, D_bin, D_age = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep], D_age[keep]
+            old_idx = curate_rng.choice(len(D_X), n_old, replace=False)   # uniform
+        trX = np.concatenate([nX, D_X[old_idx]]) if len(D_X) else nX
+        trY = np.concatenate([nY, D_Y[old_idx]]) if len(D_X) else nY
 
-        # Training subset: USE_CURATION -> graduated-decile keep (per-bin hardness, recency-biased);
-        # else UNIFORM (train on the whole aggregate).
-        if USE_CURATION:
-            mask = curate(D_X, D_Y, D_H, D_bin, curate_rng, weights=recency_weights(D_age))
-        else:
-            mask = np.ones(len(D_X), dtype=bool)
         init = policy.state_dict() if WARM_START else None
-        state, om, os_, best_va, var_lam = train(D_X[mask], D_Y[mask], init_state=init)
-        policy = Actor(obs_dim=D_X.shape[1], act_dim=N, hidden=hidden)
+        state, om, os_, best_va, var_lam = train(trX, trY, init_state=init)
+        policy = Actor(obs_dim=trX.shape[1], act_dim=N, hidden=hidden)
         policy.load_state_dict(state); policy.eval()
+
+        # UPDATE the pool: add this iter's new data, then bound to MAX_AGG (hardest-first else uniform).
+        D_X = np.concatenate([D_X, nX]); D_Y = np.concatenate([D_Y, nY])
+        D_H = np.concatenate([D_H, nH]); D_bin = np.concatenate([D_bin, nbin])
+        D_age = np.concatenate([D_age, np.full(len(nX), gen0 + k - 1, np.int64)])
+        if len(D_X) > MAX_AGG:
+            keep = np.argsort(-D_H)[:MAX_AGG] if USE_CURATION else curate_rng.permutation(len(D_X))[:MAX_AGG]
+            D_X, D_Y, D_H, D_bin, D_age = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep], D_age[keep]
 
         if def_diag is not None:
             show_diag(def_diag, f"iter {k} default-anchor rollout  (beta {beta:.2f})")
         buzz_curve.append(float(np.mean(buzz_k)))
-        bincnt = "/".join(f"{BIN_NAMES[b][:4]}{int((D_bin[mask] == b).sum())}" for b in sorted(BIN_NAMES))
-        print(f"iter {k}  beta {beta:.2f}  ({TRAJ_PER_ITER} trajs)  |  buzz {np.mean(buzz_k):.4f}  "
+        print(f"iter {k}  beta {beta:.2f}  ({len(batch)} trajs)  |  buzz {np.mean(buzz_k):.4f}  "
               f"vmin {min(vmin_k):.3f}  track {np.mean(track_k):.4f}  |  "
-              f"MSE {best_va:.4f} (Var {var_lam:.3f})  |  agg {len(D_X)} train {int(mask.sum())} [{bincnt}]")
+              f"MSE {best_va:.4f} (Var {var_lam:.3f})  |  new {len(nX)} train {len(trX)} pool {len(D_X)}")
     env.close()
 
     torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},
