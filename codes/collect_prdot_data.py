@@ -47,6 +47,29 @@ OUT = f"prdot_dataset{SUFFIX}.npz"
 # Optimizer's initial lambda (matches ClassicalAgent.reset's seed): A0*cos(xi0*0 + phases).
 LAM0 = 1.2 * np.cos(np.asarray(PHASES))
 
+# ---- lambda-HISTORY input (F1 phase-inertia / hidden-state memory) --------------------
+# The net sees its last LAM_HIST APPLIED lambdas (newest-first), not just lambda_{t-1}. Why:
+# a continuous recent trajectory can't jump to anti-phase without a discontinuity the net never
+# saw in training -> phase INERTIA that resists the closed-loop phase slip; and the window makes
+# the optimizer's hidden A/xi state observable. Cold start = analytic continuation of the init
+# sinusoid to NEGATIVE time: during the hold the real lambda IS A0*cos(XI0*t + PHASES), so the
+# fake past is a SEAMLESS extension of it (not made-up data). Shared by collect/dagger/deploy so
+# the buffer is built identically -> no train/deploy mismatch.
+XI0, A0 = 2.0, 1.2            # optimizer's initial (frequency, amplitude); LAM0 = A0*cos(XI0*0+PHASES)
+LAM_HIST = 10                 # number of past applied-lambda rows fed to the net
+
+
+def init_lam_history(n_hist=LAM_HIST):
+    """Newest-first cold-start buffer (n_hist, N): lambda_{-1..-n_hist} on the init sinusoid,
+    lambda_{-k} = A0*cos(XI0*(-k*DT) + PHASES). Seamless continuation of the real early lambda."""
+    ph = np.asarray(PHASES)
+    return np.stack([A0 * np.cos(XI0 * (-(k + 1) * DT) + ph) for k in range(n_hist)])
+
+
+def push_lam(buf, lam):
+    """Push applied `lam` (N,) onto the newest-first buffer, drop the oldest -> new (n_hist, N)."""
+    return np.vstack([np.asarray(lam)[None, :], buf[:-1]])
+
 # ---- F1 policy capacity (shared by train_prdot / dagger_prdot; saved in ckpts) --------
 PRDOT_HIDDEN = (256, 256)     # was (128,128); loaders read "hidden" from the ckpt
 
@@ -218,9 +241,11 @@ def reconstruct_lp(R, vL, omega, w_d, lam_prev, prev_f_lp, Bb, L0, dt, alpha):
     return vR, f_lp, G_pinv, Nmat
 
 
-def build_input(t, vR, prev_lam):
-    """The net's input row: [clock(14), pR_dot(n*3), lambda_{t-1}(n)]."""
-    return np.concatenate([clock_features(t), vR.flatten(), prev_lam])
+def build_input(t, vR, lam):
+    """The net's input row: [clock(14), pR_dot(n*3), lambda-block]. `lam` is EITHER lambda_{t-1}
+    (N,) [legacy single-step; still used by F2's residual env] OR a newest-first history buffer
+    (LAM_HIST, N) [F1 memory] — flattened either way, so the input dim follows whichever is passed."""
+    return np.concatenate([clock_features(t), vR.flatten(), np.asarray(lam).flatten()])
 
 
 class Reconstructor:
@@ -266,7 +291,8 @@ def rollout(env, agent, Bb, L0, traj):
     agent.reset()
 
     prev_f = np.array([0.0, 0.0, FZ] * N)           # applied force (for plant filtering only)
-    prev_lam = LAM0.copy()                          # lambda_{t-1}
+    prev_lam = LAM0.copy()                          # lambda_{t-1} (for the pR_dot reconstruction)
+    lam_buf = init_lam_history()                    # newest-first last-LAM_HIST applied lambda (input)
     prev_vLd = None                                 # ref velocity_{t-1} (for accel -> activity bin)
     recon = Reconstructor(Bb, L0, DT)
     X_rows, Y_rows, H_rows, bin_rows = [], [], [], []
@@ -288,9 +314,9 @@ def rollout(env, agent, Bb, L0, traj):
         ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t, traj)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
 
-        # Input: pR_dot (mode set by ANALYTIC) from lambda_{t-1} + current load state.
+        # Input: pR_dot (mode set by ANALYTIC) from lambda_{t-1} + last-LAM_HIST applied lambda.
         vR = recon(R, vel, angvel, w_d, prev_lam)
-        X_rows.append(build_input(t, vR, prev_lam))
+        X_rows.append(build_input(t, vR, lam_buf))
 
         # Target: the optimizer's full lambda vector (same w_d, so no double integration).
         lam, _ = agent.optimize(t, R, vel, angvel, w_d, bypass=BYPASS_OPT)
@@ -322,9 +348,10 @@ def rollout(env, agent, Bb, L0, traj):
         prev_f = ff.copy()
         obs42, *_ = env.step(np.concatenate([ff, deriv]))
 
-        # Roll histories.
+        # Roll histories with the APPLIED lambda (here = the optimizer's lambda).
         recon.roll(lam)
         prev_lam = lam.copy()
+        lam_buf = push_lam(lam_buf, lam)
         t += DT
 
     hist = dict(t=np.array(t_hist), load=np.array(load_hist), ref=np.array(ref_hist),

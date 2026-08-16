@@ -35,7 +35,8 @@ from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from collect_prdot_data import (Reconstructor, build_input, LAM0, SUFFIX,
-                                 PRDOT_HIDDEN, activity_bin, LAM_LP_TAU)
+                                 PRDOT_HIDDEN, activity_bin, LAM_LP_TAU,
+                                 init_lam_history, push_lam)
 from controller import get_reference_trajectory
 from deploy_prdot import main as deploy_prdot_main
 from trajectories import train_set, custom_set, TRAIN_SEED
@@ -61,7 +62,19 @@ USE_CURATION = False  # False = UNIFORM (random old-sample + random eviction). T
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+
+# ADAPTIVE beta ladder near deployment: don't leave a beta until the closed-loop buzz drops below
+# BUZZ_PASS. Warm-start transmits a jittery net's bad weight-basin (hard-won: a regressed net is
+# sticky, MSE is only a strong-not-perfect buzz proxy), so we gate on buzz directly and retry the
+# SAME beta rather than shoving a not-yet-good net down to a harder one. Only matters near beta=0.
+GATE_BETA = 0.1       # gating active only for beta <= this (deployment region); above -> one pass/beta
+BUZZ_PASS = 0.022     # leave a gated beta once mean rollout buzz < this (floor is ~0.016)
+STUCK_AFTER = 0       # normal-budget retries before escalating to keep-all-data + train-whole-pool.
+                      #   0 = the FIRST failed gate is already "stuck" -> train on EVERYTHING at once
+                      #   (a buzz problem needs the hard data now). Gating alone (beta<=GATE_BETA)
+                      #   still does NOT bloat: a beta that PASSES stays at the normal caps.
+MAX_RETRIES = 3       # total retrains at a stuck gated beta before advancing anyway (best-effort)
 EPOCHS = 150          # fewer epochs: warm-started from the previous net each iter (WARM_START)
 BATCH = 256
 LR = 1e-3
@@ -86,7 +99,8 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
     agent.reset()
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
-    prev_lam = LAM0.copy()          # APPLIED lambda_{t-1} (post-EMA)
+    prev_lam = LAM0.copy()          # APPLIED lambda_{t-1} (post-EMA); for the pR_dot reconstruction
+    lam_buf = init_lam_history()    # newest-first last-LAM_HIST applied lambda (net input)
     prev_vLd = None                 # ref velocity_{t-1} (accel -> activity bin)
     lam_lp = LAM0.copy()            # in-loop EMA state (soft warm-start continuity)
     lam_a = None if LAM_LP_TAU is None else DT / (LAM_LP_TAU + DT)
@@ -110,7 +124,7 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
 
         # Policy input at the VISITED state: pR_dot (mode set by ANALYTIC) from lambda_{t-1}.
         vR = recon(R, vel, angvel, w_d, prev_lam)
-        row = build_input(t, vR, prev_lam)
+        row = build_input(t, vR, lam_buf)
         Xn = ((row[None, :] - om) / os_).astype(np.float32)
         with torch.no_grad():
             lam_pol = policy(torch.tensor(Xn)).numpy().flatten()
@@ -156,6 +170,7 @@ def rollout(policy, om, os_, beta, env, agent, Bb, L0, traj=None):
         # Roll histories with the APPLIED (EMA-smoothed mixed) lambda.
         recon.roll(lam_applied)
         prev_lam = lam_applied.copy()
+        lam_buf = push_lam(lam_buf, lam_applied)
         t += DT
 
     lam_pol_hist = [np.array(l) for l in lam_pol_hist]
@@ -280,17 +295,47 @@ def main():
     agent = ClassicalAgent(N, DT, PHASES, EPS, L0, m, J, Bb)
     curate_rng = np.random.default_rng(SEED)
 
+    def snapshot():                     # deep-copy the CURRENT policy weights (late-binds `policy`)
+        return {k: v.clone() for k, v in policy.state_dict().items()}
+    good_state = snapshot()             # last VERIFIED-GOOD net (warm-start source + revert target)
+
+    def evict_pool():                   # collapse the pool back to the normal MAX_AGG cap
+        nonlocal D_X, D_Y, D_H, D_bin, D_age
+        if len(D_X) > MAX_AGG:
+            keep = np.argsort(-D_H)[:MAX_AGG] if USE_CURATION else curate_rng.permutation(len(D_X))[:MAX_AGG]
+            D_X, D_Y, D_H, D_bin, D_age = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep], D_age[keep]
+
+    def add_new():                      # append THIS pass's new rollout data to the pool
+        nonlocal D_X, D_Y, D_H, D_bin, D_age
+        D_X = np.concatenate([D_X, nX]); D_Y = np.concatenate([D_Y, nY])
+        D_H = np.concatenate([D_H, nH]); D_bin = np.concatenate([D_bin, nbin])
+        D_age = np.concatenate([D_age, np.full(len(nX), gen0 + it - 1, np.int64)])
+
+    def budgeted_trainset():            # NORMAL train set: ALL new (fully) + sample old to TRAIN_BUDGET
+        n_old = max(0, TRAIN_BUDGET - len(nX))    # call BEFORE add_new (samples OLD pool, excludes new)
+        if len(D_X) <= n_old:
+            old_idx = np.arange(len(D_X))
+        elif USE_CURATION:
+            old_idx = np.argsort(-D_H)[:n_old]                     # HARDEST-first, deterministic
+        else:
+            old_idx = curate_rng.choice(len(D_X), n_old, replace=False)   # uniform
+        trX = np.concatenate([nX, D_X[old_idx]]) if len(D_X) else nX
+        trY = np.concatenate([nY, D_Y[old_idx]]) if len(D_X) else nY
+        return trX, trY
+
     buzz_curve = []
-    for k, beta in enumerate(BETAS, 1):
-        # GENERALIZATION: aggregate closed-loop corrections over a fresh batch of trajectories.
-        # Seed off the GLOBAL generation (gen0 + k - 1 = the sample age), so staged runs CONTINUE
-        # the trajectory stream instead of re-drawing the same set at each run's first iter.
-        batch = list(train_set(TRAJ_PER_ITER, seed=TRAIN_SEED + gen0 + k - 1))
+    bi, it, retries = 0, 0, 0
+    while bi < len(BETAS):
+        beta = BETAS[bi]; it += 1
+        gate_on = beta <= GATE_BETA
+
+        # ---- rollout the CURRENT policy at beta -> new data + closed-loop buzz ----
+        # Seed off the GLOBAL generation (gen0 + it - 1), so staged runs + retries keep drawing
+        # FRESH trajectories from the stream instead of re-rolling the same set.
+        batch = list(train_set(TRAJ_PER_ITER, seed=TRAIN_SEED + gen0 + it - 1))
         batch = custom_set() + batch           # 5 solver-engaging customs every iter (fixed set)
         if INCLUDE_DEFAULT:
             batch.insert(0, (None, None))      # anchor: closed-loop correction on the straight line too
-        # Collect THIS iter's new data SEPARATELY from the persisted pool (D_*). We train on all of
-        # it FULLY; the pool is only a reservoir we top up the training set from.
         nX, nY, nH, nbin = [], [], [], []
         buzz_k, vmin_k, track_k, def_diag = [], [], [], None
         for traj, _p in batch:
@@ -301,39 +346,68 @@ def main():
                 def_diag = diag                      # the straight-line anchor: the cross-iter reference
         nX = np.concatenate(nX); nY = np.concatenate(nY)
         nH = np.concatenate(nH); nbin = np.concatenate(nbin)
+        buzz = float(np.mean(buzz_k))
+        if def_diag is not None:
+            show_diag(def_diag, f"iter {it} default-anchor  (beta {beta:.2f}, retry {retries})")
+        buzz_curve.append(buzz)
 
-        # TRAIN SET = ALL new data (FULLY) + a sample of the OLD pool to reach TRAIN_BUDGET. New is
-        # NEVER subsampled. Old-sample: hardest-first (USE_CURATION) else uniform. (No more "train on
-        # the whole 150k aggregate" — that was the very-long-training / evicted-new-data disaster.)
-        n_old = max(0, TRAIN_BUDGET - len(nX))
-        if len(D_X) <= n_old:
-            old_idx = np.arange(len(D_X))
-        elif USE_CURATION:
-            old_idx = np.argsort(-D_H)[:n_old]                     # HARDEST-first, deterministic
-        else:
-            old_idx = curate_rng.choice(len(D_X), n_old, replace=False)   # uniform
-        trX = np.concatenate([nX, D_X[old_idx]]) if len(D_X) else nX
-        trY = np.concatenate([nY, D_Y[old_idx]]) if len(D_X) else nY
+        # ================= GATED region (beta <= GATE_BETA): STAY until buzz passes ==============
+        if gate_on:
+            passed = buzz < BUZZ_PASS
+            giveup = (not passed) and retries >= MAX_RETRIES
+
+            if passed or giveup:
+                # ADVANCE — but ALWAYS train on this pass's fresh data first (never waste a rollout).
+                # On PASS, anchor good_state to the VERIFIED (pre-train) net; carry the freshly-trained
+                # net forward (the next beta's gate re-verifies it). Normal budget (advancing != stuck).
+                if passed:
+                    good_state = snapshot()           # verified passing net = warm-start/revert anchor
+                init = policy.state_dict() if passed else good_state
+                trX, trY = budgeted_trainset()
+                state, om, os_, best_va, var_lam = train(trX, trY, init_state=init)
+                policy = Actor(obs_dim=trX.shape[1], act_dim=N, hidden=hidden)
+                policy.load_state_dict(state); policy.eval()
+                add_new(); evict_pool()               # keep data, pool back to the normal MAX_AGG cap
+                tag = "PASS" if passed else f"GIVE-UP/{MAX_RETRIES}"
+                print(f"iter {it}  beta {beta:.2f}  {tag}  buzz {buzz:.4f} "
+                      f"{'<' if passed else '>='} {BUZZ_PASS}  |  MSE {best_va:.4f}  "
+                      f"train {len(trX)}  pool {len(D_X)}  -> advance")
+                bi += 1; retries = 0
+                continue
+
+            # RETRY (stay at this beta): warm-start from the last VERIFIED-GOOD net (never a candidate).
+            retries += 1
+            stuck = retries > STUCK_AFTER             # ACTUALLY stuck -> escalate to the whole pool
+            if stuck:
+                add_new()                             # keep ALL data (no evict), train on the whole pool
+                trX, trY = D_X, D_Y
+            else:
+                trX, trY = budgeted_trainset()        # NORMAL: new-fully + sampled-old to TRAIN_BUDGET
+                add_new(); evict_pool()               #   pool stays at the normal MAX_AGG cap
+            state, om, os_, best_va, var_lam = train(trX, trY, init_state=good_state)
+            policy = Actor(obs_dim=trX.shape[1], act_dim=N, hidden=hidden)
+            policy.load_state_dict(state); policy.eval()
+            print(f"iter {it}  beta {beta:.2f}  retry {retries}/{MAX_RETRIES}"
+                  f"{' STUCK' if stuck else ''}  buzz {buzz:.4f} >= {BUZZ_PASS}  |  "
+                  f"MSE {best_va:.4f}  train {len(trX)}  pool {len(D_X)}")
+            continue                                  # stay at this beta; next loop evaluates the retrain
+
+        # ================= NON-GATED (beta > GATE_BETA): one pass, then advance =================
+        # TRAIN SET = ALL new data (FULLY) + a sample of the OLD pool to reach TRAIN_BUDGET.
+        trX, trY = budgeted_trainset()
 
         init = policy.state_dict() if WARM_START else None
         state, om, os_, best_va, var_lam = train(trX, trY, init_state=init)
         policy = Actor(obs_dim=trX.shape[1], act_dim=N, hidden=hidden)
         policy.load_state_dict(state); policy.eval()
+        good_state = snapshot()                       # non-gated betas are accepted as-is
 
-        # UPDATE the pool: add this iter's new data, then bound to MAX_AGG (hardest-first else uniform).
-        D_X = np.concatenate([D_X, nX]); D_Y = np.concatenate([D_Y, nY])
-        D_H = np.concatenate([D_H, nH]); D_bin = np.concatenate([D_bin, nbin])
-        D_age = np.concatenate([D_age, np.full(len(nX), gen0 + k - 1, np.int64)])
-        if len(D_X) > MAX_AGG:
-            keep = np.argsort(-D_H)[:MAX_AGG] if USE_CURATION else curate_rng.permutation(len(D_X))[:MAX_AGG]
-            D_X, D_Y, D_H, D_bin, D_age = D_X[keep], D_Y[keep], D_H[keep], D_bin[keep], D_age[keep]
+        add_new(); evict_pool()                       # pool += new, bound to MAX_AGG (normal cap)
 
-        if def_diag is not None:
-            show_diag(def_diag, f"iter {k} default-anchor rollout  (beta {beta:.2f})")
-        buzz_curve.append(float(np.mean(buzz_k)))
-        print(f"iter {k}  beta {beta:.2f}  ({len(batch)} trajs)  |  buzz {np.mean(buzz_k):.4f}  "
+        print(f"iter {it}  beta {beta:.2f}  ({len(batch)} trajs)  |  buzz {buzz:.4f}  "
               f"vmin {min(vmin_k):.3f}  track {np.mean(track_k):.4f}  |  "
               f"MSE {best_va:.4f} (Var {var_lam:.3f})  |  new {len(nX)} train {len(trX)} pool {len(D_X)}")
+        bi += 1
     env.close()
 
     torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},

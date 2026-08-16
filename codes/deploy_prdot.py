@@ -24,7 +24,7 @@ from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX
+from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX, init_lam_history, push_lam
 from trajectories import heldout_set, showcase_set
 
 POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
@@ -38,7 +38,7 @@ HELDOUT_N = 10        # number of held-out trajectories to evaluate
 SHOWCASE = "short"       # __main__ (overrides EVAL_HELDOUT): None | "short" | "long". Runs the demo
                       #   trajectories (trajectories.showcase_set) at their OWN lengths -> shows the
                       #   net handles any horizon. "short"=compact 25s, "long"=35s training-like.
-SHOWCASE_IDX = 1   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
+SHOWCASE_IDX = 0   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
                       #   (0=line, 1..M=quintics) — symmetric with deploy_compare.SHOWCASE_IDX.
 SHOWCASE_M = 3        # quintics per showcase preset
 
@@ -73,6 +73,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
 
     prev_f = np.array([0.0, 0.0, FZ] * N)
     prev_lam = LAM0.copy()
+    lam_buf = init_lam_history()                      # newest-first last-LAM_HIST applied lambda (input)
     lam_lp = LAM0.copy()                              # output-side low-pass state
     lam_a = None if LAM_LP_TAU is None else DT / (LAM_LP_TAU + DT)
     recon = Reconstructor(Bb, L0, DT)
@@ -92,7 +93,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
         ep, eR, ev, ew = error_calculation(pos, vel, R, angvel, t, traj)
         w_d = agent.wrench_control(ep, eR, ev, ew, angvel)
         vR = recon(R, vel, angvel, w_d, prev_lam)
-        X = ((build_input(t, vR, prev_lam)[None, :] - om) / os_).astype(np.float32)
+        X = ((build_input(t, vR, lam_buf)[None, :] - om) / os_).astype(np.float32)
         with torch.no_grad():
             lam = net(torch.tensor(X)).numpy().flatten()       # (N,)
 
@@ -116,6 +117,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
 
         recon.roll(lam)
         prev_lam = lam.copy()
+        lam_buf = push_lam(lam_buf, lam)               # applied (post-EMA) lambda into the history
         t += DT
     loop_time = time.perf_counter() - loop_t0
 

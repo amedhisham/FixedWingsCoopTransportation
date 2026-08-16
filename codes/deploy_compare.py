@@ -26,7 +26,7 @@ from trajectories import heldout_set, custom_set, showcase_set
 # its OWN horizon — shows the net handles any length. None | "short" | "long" (trajectories.
 # showcase_set); SHOWCASE_IDX picks which entry (0=line, 1..=quintics). Overrides the toggles below.
 SHOWCASE = "short"
-SHOWCASE_IDX = 0      # 0 -> the straight-line demo; 1.. -> the quintic demos
+SHOWCASE_IDX = 1      # 0 -> the straight-line demo; 1.. -> the quintic demos
 SHOWCASE_M = 3        # quintics available per preset (so SHOWCASE_IDX can reach 1..M)
 
 # next 3 lines kinda dead code 
@@ -36,7 +36,7 @@ USE_CUSTOM = None    # set to a custom index (0..4: +x,+y,+x+y,-x+y,+x-y) to sur
                       #   custom traj instead (overrides USE_DEFAULT). None -> off.
 
 BYPASS_OPT = False     # adaptive optimizer (the real expert), matches collection
-RUN_NET = False         # False -> optimizer ONLY (skip the net, fast) to survey the optimizer per traj
+RUN_NET = True         # False -> optimizer ONLY (skip the net, fast) to survey the optimizer per traj
 
 
 def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
