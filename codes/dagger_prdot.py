@@ -23,6 +23,7 @@ deploy_prdot on the final policy.
 """
 
 import copy
+from collections import deque
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -62,7 +63,7 @@ USE_CURATION = False  # False = UNIFORM (random old-sample + random eviction). T
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.05,0.04,0.03,0.02,0.01,0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
 
 # ADAPTIVE beta ladder near deployment: don't leave a beta until the closed-loop buzz drops below
 # BUZZ_PASS. Warm-start transmits a jittery net's bad weight-basin (hard-won: a regressed net is
@@ -299,6 +300,23 @@ def main():
         return {k: v.clone() for k, v in policy.state_dict().items()}
     good_state = snapshot()             # last VERIFIED-GOOD net (warm-start source + revert target)
 
+    # Ctrl-C autosave: keep the last 2 CLEAN (verified-good) nets only — never a stuck/retry
+    # candidate. keep_good() is called wherever good_state is anchored, with the om/os_ that
+    # MATCH that net at that moment (so the saved triple deploys correctly).
+    recent = deque(maxlen=2)
+    def keep_good():
+        recent.append({"state_dict": {k: v.clone() for k, v in good_state.items()},
+                       "obs_mean": np.asarray(om).copy(), "obs_std": np.asarray(os_).copy(),
+                       "hidden": hidden})
+    def flush_autosave():
+        if not recent:
+            print("\n[Ctrl-C] no verified-good net yet — nothing to autosave"); return
+        tags = ["_prev", "_last"][-len(recent):]   # 1 item -> "_last"; 2 -> ["_prev","_last"]
+        for ck, tag in zip(recent, tags):
+            p = f"il_actor_prdot_dagger_autosave{tag}{SUFFIX}.pt"
+            torch.save(ck, p); print(f"[Ctrl-C] autosaved {p}")
+    keep_good()                         # the warm-start net is itself a clean starting point
+
     def evict_pool():                   # collapse the pool back to the normal MAX_AGG cap
         nonlocal D_X, D_Y, D_H, D_bin, D_age
         if len(D_X) > MAX_AGG:
@@ -325,7 +343,9 @@ def main():
 
     buzz_curve = []
     bi, it, retries = 0, 0, 0
+    interrupted = False
     while bi < len(BETAS):
+      try:
         beta = BETAS[bi]; it += 1
         gate_on = beta <= GATE_BETA
 
@@ -362,6 +382,7 @@ def main():
                 # net forward (the next beta's gate re-verifies it). Normal budget (advancing != stuck).
                 if passed:
                     good_state = snapshot()           # verified passing net = warm-start/revert anchor
+                    keep_good()                        # clean net (om/os_ still match it here) -> autosave buffer
                 init = policy.state_dict() if passed else good_state
                 trX, trY = budgeted_trainset()
                 state, om, os_, best_va, var_lam = train(trX, trY, init_state=init)
@@ -401,6 +422,7 @@ def main():
         policy = Actor(obs_dim=trX.shape[1], act_dim=N, hidden=hidden)
         policy.load_state_dict(state); policy.eval()
         good_state = snapshot()                       # non-gated betas are accepted as-is
+        keep_good()                                   # clean net (om/os_ = just-trained) -> autosave buffer
 
         add_new(); evict_pool()                       # pool += new, bound to MAX_AGG (normal cap)
 
@@ -408,7 +430,15 @@ def main():
               f"vmin {min(vmin_k):.3f}  track {np.mean(track_k):.4f}  |  "
               f"MSE {best_va:.4f} (Var {var_lam:.3f})  |  new {len(nX)} train {len(trX)} pool {len(D_X)}")
         bi += 1
+      except KeyboardInterrupt:
+        interrupted = True
+        break                                         # bail out of the ladder, autosave below
     env.close()
+
+    if interrupted:
+        print("\n[Ctrl-C] interrupted — autosaving the last 2 verified-good nets")
+        flush_autosave()
+        return
 
     torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},
                 "obs_mean": om, "obs_std": os_, "hidden": hidden}, f"il_actor_prdot_dagger{SUFFIX}.pt")

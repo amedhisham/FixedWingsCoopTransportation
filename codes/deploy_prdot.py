@@ -35,10 +35,10 @@ EVAL_HELDOUT = True   # __main__: True -> generalization test over HELD-OUT traj
                       #   on); False -> single run on the default straight-line trajectory (with plots).
 HELDOUT_N = 10        # number of held-out trajectories to evaluate
 
-SHOWCASE = "short"       # __main__ (overrides EVAL_HELDOUT): None | "short" | "long". Runs the demo
+SHOWCASE = "long"       # __main__ (overrides EVAL_HELDOUT): None | "short" | "long". Runs the demo
                       #   trajectories (trajectories.showcase_set) at their OWN lengths -> shows the
                       #   net handles any horizon. "short"=compact 25s, "long"=35s training-like.
-SHOWCASE_IDX = 0   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
+SHOWCASE_IDX = 2   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
                       #   (0=line, 1..M=quintics) — symmetric with deploy_compare.SHOWCASE_IDX.
 SHOWCASE_M = 3        # quintics per showcase preset
 
