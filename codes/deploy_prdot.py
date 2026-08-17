@@ -27,7 +27,7 @@ from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, F
 from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX, init_lam_history, push_lam
 from trajectories import heldout_set, showcase_set
 
-POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
+POLICY = f"il_actor_prdot_dagger_autosave_prev_analytic.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
                                                #   July non-analytic net -> spurious "held-out garbage".
 
@@ -38,7 +38,7 @@ HELDOUT_N = 10        # number of held-out trajectories to evaluate
 SHOWCASE = "long"       # __main__ (overrides EVAL_HELDOUT): None | "short" | "long". Runs the demo
                       #   trajectories (trajectories.showcase_set) at their OWN lengths -> shows the
                       #   net handles any horizon. "short"=compact 25s, "long"=35s training-like.
-SHOWCASE_IDX = 2   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
+SHOWCASE_IDX = 0   # None -> the WHOLE preset (line + all quintics); or an index to isolate ONE
                       #   (0=line, 1..M=quintics) — symmetric with deploy_compare.SHOWCASE_IDX.
 SHOWCASE_M = 3        # quintics per showcase preset
 

@@ -48,27 +48,45 @@ OUT = f"prdot_dataset{SUFFIX}.npz"
 LAM0 = 1.2 * np.cos(np.asarray(PHASES))
 
 # ---- lambda-HISTORY input (F1 phase-inertia / hidden-state memory) --------------------
-# The net sees its last LAM_HIST APPLIED lambdas (newest-first), not just lambda_{t-1}. Why:
+# The net sees its LAST APPLIED lambdas (newest-first), not just lambda_{t-1}. Why:
 # a continuous recent trajectory can't jump to anti-phase without a discontinuity the net never
 # saw in training -> phase INERTIA that resists the closed-loop phase slip; and the window makes
 # the optimizer's hidden A/xi state observable. Cold start = analytic continuation of the init
 # sinusoid to NEGATIVE time: during the hold the real lambda IS A0*cos(XI0*t + PHASES), so the
 # fake past is a SEAMLESS extension of it (not made-up data). Shared by collect/dagger/deploy so
 # the buffer is built identically -> no train/deploy mismatch.
+#
+# LOG-SPACED TAPS: instead of the dense last-10 (0.1s span, ~15x shorter than a ~1.5s half-cycle
+# so it can't straddle a slip), we retain a full-depth ring buffer and expose 10 taps at
+# geometrically-spaced lags. Dense recent (0.01-0.16s) keeps step-to-step continuity; the deep taps
+# (128/192/256 = 1.28/1.92/2.56s) reach past a half-cycle so the buffer STRADDLES the flip and the
+# net can "remember it was in-phase" a full period ago. Same 10-tap dim budget (LAM_HIST*N) as the
+# old dense window, so the net input width is UNCHANGED (66) -- but the semantics differ, so a
+# FRESH BC train is required (a net trained on the dense window won't read taps correctly).
 XI0, A0 = 2.0, 1.2            # optimizer's initial (frequency, amplitude); LAM0 = A0*cos(XI0*0+PHASES)
-LAM_HIST = 10                 # number of past applied-lambda rows fed to the net
+LAM_LAGS = [1, 2, 4, 8, 16, 32, 64, 128, 192, 256]   # steps-back of the exposed taps (192 fills the
+                                                     #   too-sparse 128->256 gap; last=one lambda period)
+LAM_HIST = len(LAM_LAGS)      # number of tap rows fed to the net (flattened block = LAM_HIST*N)
+LAM_MAXLAG = LAM_LAGS[-1]     # full ring-buffer depth we must retain to serve the deepest tap
+_LAG_IDX = np.asarray(LAM_LAGS) - 1    # newest-first buffer: lag L (steps back) -> row index L-1
 
 
-def init_lam_history(n_hist=LAM_HIST):
-    """Newest-first cold-start buffer (n_hist, N): lambda_{-1..-n_hist} on the init sinusoid,
-    lambda_{-k} = A0*cos(XI0*(-k*DT) + PHASES). Seamless continuation of the real early lambda."""
+def init_lam_history(depth=LAM_MAXLAG):
+    """Cold-start FULL-DEPTH ring buffer (depth, N), newest-first: lambda_{-1..-depth} on the init
+    sinusoid, lambda_{-k} = A0*cos(XI0*(-k*DT) + PHASES). Seamless continuation of the real early
+    lambda (during the hold the true lambda IS this sinusoid). Tapped by lam_taps / build_input."""
     ph = np.asarray(PHASES)
-    return np.stack([A0 * np.cos(XI0 * (-(k + 1) * DT) + ph) for k in range(n_hist)])
+    return np.stack([A0 * np.cos(XI0 * (-(k + 1) * DT) + ph) for k in range(depth)])
 
 
 def push_lam(buf, lam):
-    """Push applied `lam` (N,) onto the newest-first buffer, drop the oldest -> new (n_hist, N)."""
+    """Push applied `lam` (N,) onto the newest-first full-depth buffer, drop the oldest."""
     return np.vstack([np.asarray(lam)[None, :], buf[:-1]])
+
+
+def lam_taps(buf):
+    """Gather the LAM_LAGS log-spaced rows from a newest-first full-depth buffer -> (LAM_HIST, N)."""
+    return np.asarray(buf)[_LAG_IDX]
 
 # ---- F1 policy capacity (shared by train_prdot / dagger_prdot; saved in ckpts) --------
 PRDOT_HIDDEN = (256, 256)     # was (128,128); loaders read "hidden" from the ckpt
@@ -243,9 +261,12 @@ def reconstruct_lp(R, vL, omega, w_d, lam_prev, prev_f_lp, Bb, L0, dt, alpha):
 
 def build_input(t, vR, lam):
     """The net's input row: [clock(14), pR_dot(n*3), lambda-block]. `lam` is EITHER lambda_{t-1}
-    (N,) [legacy single-step; still used by F2's residual env] OR a newest-first history buffer
-    (LAM_HIST, N) [F1 memory] — flattened either way, so the input dim follows whichever is passed."""
-    return np.concatenate([clock_features(t), vR.flatten(), np.asarray(lam).flatten()])
+    (N,) [legacy single-step; still used by F2's residual env] -> flattened as-is, OR a newest-first
+    FULL-DEPTH history buffer (LAM_MAXLAG, N) [F1 memory] -> log-spaced tapped to (LAM_HIST, N) first.
+    The flattened block width follows whichever is passed."""
+    lam = np.asarray(lam)
+    block = lam_taps(lam) if lam.ndim == 2 else lam    # 2-D -> full-depth buffer -> tap; 1-D -> as-is
+    return np.concatenate([clock_features(t), vR.flatten(), block.flatten()])
 
 
 class Reconstructor:

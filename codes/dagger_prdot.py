@@ -63,7 +63,7 @@ USE_CURATION = False  # False = UNIFORM (random old-sample + random eviction). T
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.05,0.04,0.03,0.02,0.01,0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
 
 # ADAPTIVE beta ladder near deployment: don't leave a beta until the closed-loop buzz drops below
 # BUZZ_PASS. Warm-start transmits a jittery net's bad weight-basin (hard-won: a regressed net is
@@ -268,7 +268,7 @@ def main():
     # Warm-start (RESUME-aware): prefer the DAGGERED net over BC, and the saved AGGREGATE over
     # the collect dataset -> repeated runs truly CONTINUE (build on prior corrections + the
     # improved policy's state distribution), instead of restarting from BC + collect each time.
-    dagger_ckpt = f"il_actor_prdot_dagger{SUFFIX}.pt"
+    dagger_ckpt = f"il_actor_prdot_dagger_autosave_prev_analytic.pt"
     net_path = dagger_ckpt if os.path.exists(dagger_ckpt) else f"il_actor_prdot{SUFFIX}.pt"
     ckpt = torch.load(net_path, map_location="cpu", weights_only=False)
     hidden = tuple(ckpt.get("hidden", (128, 128)))     # pre-"hidden" ckpts were (128,128)
