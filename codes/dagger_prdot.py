@@ -63,14 +63,14 @@ USE_CURATION = False  # False = UNIFORM (random old-sample + random eviction). T
 # beta schedule: 1 = pure expert (stay on the optimizer manifold), 0 = pure policy
 # (deployment distribution). CONTINUE mode: all pure-policy iters to collect+correct the
 # closed-loop buzz. Each entry = one DAgger iter (x (1 default + TRAJ_PER_ITER) rollouts).
-BETAS = [0.0,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
+BETAS = [0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0] #0.7,0.6,0.5,0.4,0.3,0.2,0.15,0.1,0.08,0.06,0.04,0.02,0.0
 
 # ADAPTIVE beta ladder near deployment: don't leave a beta until the closed-loop buzz drops below
 # BUZZ_PASS. Warm-start transmits a jittery net's bad weight-basin (hard-won: a regressed net is
 # sticky, MSE is only a strong-not-perfect buzz proxy), so we gate on buzz directly and retry the
 # SAME beta rather than shoving a not-yet-good net down to a harder one. Only matters near beta=0.
 GATE_BETA = 0.1       # gating active only for beta <= this (deployment region); above -> one pass/beta
-BUZZ_PASS = 0.022     # leave a gated beta once mean rollout buzz < this (floor is ~0.016)
+BUZZ_PASS = 0.02     # leave a gated beta once mean rollout buzz < this (floor is ~0.016)
 STUCK_AFTER = 0       # normal-budget retries before escalating to keep-all-data + train-whole-pool.
                       #   0 = the FIRST failed gate is already "stuck" -> train on EVERYTHING at once
                       #   (a buzz problem needs the hard data now). Gating alone (beta<=GATE_BETA)
@@ -268,7 +268,7 @@ def main():
     # Warm-start (RESUME-aware): prefer the DAGGERED net over BC, and the saved AGGREGATE over
     # the collect dataset -> repeated runs truly CONTINUE (build on prior corrections + the
     # improved policy's state distribution), instead of restarting from BC + collect each time.
-    dagger_ckpt = f"il_actor_prdot_dagger_autosave_prev_analytic.pt"
+    dagger_ckpt = f"il_actor_prdot_dagger{SUFFIX}.pt"
     net_path = dagger_ckpt if os.path.exists(dagger_ckpt) else f"il_actor_prdot{SUFFIX}.pt"
     ckpt = torch.load(net_path, map_location="cpu", weights_only=False)
     hidden = tuple(ckpt.get("hidden", (128, 128)))     # pre-"hidden" ckpts were (128,128)
@@ -300,21 +300,20 @@ def main():
         return {k: v.clone() for k, v in policy.state_dict().items()}
     good_state = snapshot()             # last VERIFIED-GOOD net (warm-start source + revert target)
 
-    # Ctrl-C autosave: keep the last 2 CLEAN (verified-good) nets only — never a stuck/retry
-    # candidate. keep_good() is called wherever good_state is anchored, with the om/os_ that
-    # MATCH that net at that moment (so the saved triple deploys correctly).
+    # AUTOSAVE the last 2 CLEAN (verified-good) nets to disk on EVERY accept — never a stuck/retry
+    # candidate. Persisting continuously means ANY exit (normal finish, Ctrl-C, or a hard crash) leaves
+    # the last two good nets recoverable, so a run is never lost to the post-train-overwrites-verified
+    # bug again. keep_good() runs wherever good_state is anchored, with the om/os_ that MATCH that net
+    # at that moment (so the saved triple deploys correctly). Files: ..._autosave_last / _prev.
+    AUTOSAVE = f"il_actor_prdot_dagger_autosave"      # {_last,_prev}{SUFFIX}.pt
     recent = deque(maxlen=2)
     def keep_good():
         recent.append({"state_dict": {k: v.clone() for k, v in good_state.items()},
                        "obs_mean": np.asarray(om).copy(), "obs_std": np.asarray(os_).copy(),
                        "hidden": hidden})
-    def flush_autosave():
-        if not recent:
-            print("\n[Ctrl-C] no verified-good net yet — nothing to autosave"); return
-        tags = ["_prev", "_last"][-len(recent):]   # 1 item -> "_last"; 2 -> ["_prev","_last"]
+        tags = ["_prev", "_last"][-len(recent):]      # 1 item -> "_last"; 2 -> ["_prev","_last"]
         for ck, tag in zip(recent, tags):
-            p = f"il_actor_prdot_dagger_autosave{tag}{SUFFIX}.pt"
-            torch.save(ck, p); print(f"[Ctrl-C] autosaved {p}")
+            torch.save(ck, f"{AUTOSAVE}{tag}{SUFFIX}.pt")
     keep_good()                         # the warm-start net is itself a clean starting point
 
     def evict_pool():                   # collapse the pool back to the normal MAX_AGG cap
@@ -436,14 +435,20 @@ def main():
     env.close()
 
     if interrupted:
-        print("\n[Ctrl-C] interrupted — autosaving the last 2 verified-good nets")
-        flush_autosave()
+        print(f"\n[Ctrl-C] interrupted — last 2 verified-good nets already on disk: "
+              f"{AUTOSAVE}_last{SUFFIX}.pt (+_prev)")
         return
 
-    torch.save({"state_dict": {k: v for k, v in policy.state_dict().items()},
-                "obs_mean": om, "obs_std": os_, "hidden": hidden}, f"il_actor_prdot_dagger{SUFFIX}.pt")
+    # Save the last VERIFIED-GOOD net (recent[-1]), NOT `policy`. On a PASS we train once more
+    # (PASS-trains) with no subsequent rollout to re-verify, so `policy` is an UNVERIFIED post-train
+    # net that can be cooked (proven: same default traj, saved net buzz 0.18 / vmin 0 while the
+    # gated pre-train net passed at buzz 0.016). recent[-1] = good_state + its MATCHING om/os_,
+    # exactly the net whose clean rollout the last per-iter plot showed.
+    final = recent[-1] if recent else {"state_dict": {k: v for k, v in policy.state_dict().items()},
+                                        "obs_mean": om, "obs_std": os_, "hidden": hidden}
+    torch.save(final, f"il_actor_prdot_dagger{SUFFIX}.pt")
     np.savez(AGG_OUT, X=D_X, Y=D_Y, H=D_H, bins=D_bin, age=D_age)   # persist aggregate -> next run RESUMEs
-    print(f"\nsaved il_actor_prdot_dagger{SUFFIX}.pt  +  {AGG_OUT}  ({len(D_X)} samples)")
+    print(f"\nsaved il_actor_prdot_dagger{SUFFIX}.pt  (verified-good)  +  {AGG_OUT}  ({len(D_X)} samples)")
 
     plt.figure()
     plt.plot(range(1, len(buzz_curve) + 1), buzz_curve, "o-")

@@ -27,7 +27,7 @@ from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, F
 from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX, init_lam_history, push_lam
 from trajectories import heldout_set, showcase_set
 
-POLICY = f"il_actor_prdot_dagger_autosave_prev_analytic.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
+POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
                                                #   July non-analytic net -> spurious "held-out garbage".
 
