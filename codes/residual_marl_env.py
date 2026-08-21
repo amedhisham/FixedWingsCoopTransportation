@@ -150,6 +150,9 @@ class ResidualMARLEnv(ParallelEnv):
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
         blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
+        # CURRENT = REGIME 1 (rebuild the working curriculum on the multi-traj base): expert/manifold +
+        # LIGHT stall (50, PLAIN relu(eps-v)^2) + load. Regime 2 -> stall_w 50->300. Regime 3 -> stall_w
+        # 400 + hinge (stall_lin=1) + margin (stall_margin~0.05). Regime-4 terms (jerk/coord/swing) OFF.
         manifold_w=1.0,    # distance to the expert loiter loop -> served by delta_lambda. Back to the PROVEN
                            #   value (regime-4 0.5 was marginal + muddied comparisons) so the delta_w ablation
                            #   is a clean single variable against the split1 baseline reward.
@@ -158,18 +161,19 @@ class ResidualMARLEnv(ParallelEnv):
                            #   other term (jerk/swing became rounding errors) AND drove entropy collapse
                            #   (ent 4->-0.2, exploration died). The hinge+margin already give a firm bite
                            #   (~8.6 at a 0.15 dip) at w=50 -> stall stays enforced without steamrolling.
-        stall_lin=1.0,     # linear-hinge coefficient (see stall_w). Raise to push the margin harder.
+        stall_lin=0.0,     # linear-hinge coefficient (see stall_w). REGIME 1: OFF (plain quadratic floor);
+                           #   REGIME 3 sets this to 1.0 (the hinge). Raise to push the margin harder.
         stall_grace=20,    # skip stall penalty for the first N steps: drones accelerate from ~rest at reset,
                            #   an UNAVOIDABLE dip -> don't penalize it (lets stall_w be big without blowing up R).
-        stall_margin=0.05, # penalize below (epsilon + margin), NOT just below epsilon -> the drones cruise
-                           #   with a BUFFER above the true stall (0.25) and never graze it. Raise for more buffer.
+        stall_margin=0.0,  # REGIME 1: OFF (penalize only below the true epsilon). REGIME 3 sets ~0.05 to
+                           #   penalize below (epsilon + margin) -> drones cruise with a BUFFER, never graze it.
         load_w=10.0,       # load-tracking. Back to moderate: it no longer has to bully one actuator —
                            #   delta_wrench is its dedicated knob, so tracking (delta_lambda) is conflict-free.
         swing_w=0.0,       # load VELOCITY-error ||ev||^2 damping. OFF (proven twice): swing is STRUCTURAL to
                            #   the residual's loop-correction, not a dampable side-effect -> penalizing it can't
                            #   reduce it and only craters vmin (drones slow to fake low load-velocity). The real
                            #   swing source is delta_wrench being (mis)used to fight stall -> leaks into load.
-        jerk_w=8.0,        # per-drone velocity JERK ||v_t - 2 v_{t-1} + v_{t-2}||^2 -> punish JITTER. GRACED
+        jerk_w=0.0,        # REGIME 4 (didn't work) -> OFF. per-drone velocity JERK ||v_t-2v_{t-1}+v_{t-2}||^2. GRACED
                            #   at startup. CLIPPED per-step at jerk_cap. WHY CLIP: exploration inflates jerk
                            #   ~30x (det ~0.06 -> sampled ~2), so UNCLIPPED the cheapest way to cut the penalty
                            #   is to shrink log_std (kill exploration), NOT smooth the mean -> last run reward
@@ -338,9 +342,13 @@ class ResidualMARLEnv(ParallelEnv):
         self._noise_angvel = self._ar1(self._noise_angvel, self.angvel_noise)
         self._noise_rot = self._ar1(self._noise_rot, self.rot_noise)
 
+        # advance the per-step delay walk (+-1 step drift), clipped to [0, ctrl_delay_i].
+        self._delay_cur = np.clip(self._delay_cur + self.np_random.integers(-1, 2, size=self.n),
+                                  0, self.ctrl_delay)
+
         self._estimates = []
         for i in range(self.n):
-            d = min(int(self.ctrl_delay[i]), len(self._state_buffer) - 1)
+            d = min(int(self._delay_cur[i]), len(self._state_buffer) - 1)
             p0, R0, v0, w0 = self._state_buffer[-1 - d]
             p = p0 + self._noise_pos[i]
             v = v0 + self._noise_vel[i]
@@ -376,6 +384,10 @@ class ResidualMARLEnv(ParallelEnv):
         self.t = 0.0
         self._step = 0
         self._state_buffer = deque(maxlen=int(self.ctrl_delay.max()) + 1)
+        # per-step delay JITTER: each drone's staleness is a bounded random walk in [0, ctrl_delay_i]
+        # (not fixed for the whole episode) -> a drone falls behind then catches up, as in reality.
+        # ctrl_delay stays the per-episode MAX/nominal (the critic's privileged scenario param).
+        self._delay_cur = self.np_random.integers(0, np.asarray(self.ctrl_delay) + 1)
         self._noise_pos = np.zeros((self.n, 3))
         self._noise_vel = np.zeros((self.n, 3))
         self._noise_angvel = np.zeros((self.n, 3))

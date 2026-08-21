@@ -125,6 +125,34 @@ def load_library(path=LIB_OUT):
     return lib
 
 
+def training_pairs(lib_path=LIB_OUT):
+    """[(traj, expert_dpos)] for the RL-training 'train' set, INDEX-ALIGNED: the traj callables are
+    rebuilt from the SAME generators _library_entries() used (default + custom_set + train_set(N_TRAJ)),
+    so trajs[i] is exactly the reference the lib's train[i] expert path was computed on. Used by mappo
+    to sample a (reference, expert) pair per episode. traj=None means the default trajectory.
+    REGENERATE the lib (python expert_reference.py lib) whenever that set / N_TRAJ changes."""
+    train = load_library(lib_path)["train"]
+    anchors = [None] + [tr for tr, _ in custom_set()]        # NON-quintic: default line + solver-engaging customs
+    trajs = anchors + [tr for tr, _ in train_set(N_TRAJ)]
+    assert len(trajs) == len(train), (
+        f"traj/lib misalignment: {len(trajs)} trajs vs {len(train)} refs — rebuild expert_lib.npz")
+    pairs = [(trajs[i], train[i]["dpos"]) for i in range(len(trajs))]
+    n_anchor = len(anchors)             # pairs[:n_anchor] are the non-quintic anchors (indices 0..n_anchor-1)
+    return pairs, n_anchor
+
+
+def eval_scenarios(lib_path=LIB_OUT):
+    """Fixed 2-traj eval set for best-net SELECTION (score = MEAN over it, not one lucky stick):
+    1 straight LINE (the default trajectory, in-distribution anchor) + 1 HELD-OUT QUINTIC (showcase
+    long_quintic1, drawn from SHOWCASE_SEED -> disjoint from the 56 training trajs, so it doubles as a
+    generalization signal). Returns [(label, traj, expert_dpos)]; traj=None means the default line."""
+    lib = load_library(lib_path)
+    line = ("line", None, lib["train"][0]["dpos"])           # train[0] is the default == expert_ref.npz
+    q_label, q_traj, _t = showcase_set("long")[1]            # long_quintic1 (35 s), HELD OUT
+    quintic = (q_label, q_traj, lib["showcase_long"][1]["dpos"])
+    return [line, quintic]
+
+
 def main():
     """Back-compat: single default-trajectory expert path -> expert_ref.npz."""
     dpos, dvel, load = expert_path(None, T_END)

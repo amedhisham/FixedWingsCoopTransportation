@@ -23,6 +23,8 @@ import matplotlib.pyplot as plt
 
 from residual_marl_env import ResidualMARLEnv
 from networks import Actor, Critic
+from expert_reference import training_pairs, eval_scenarios
+from collect_il_data import T_END          # 35 s — the horizon the trajectories + expert refs span
 
 # --- desync spec (training distribution; matches the plan) ---
 DESYNC = dict(pos_noise=0.03, vel_noise=0.10, noise_corr=0.995)
@@ -36,6 +38,12 @@ DISABLE_DW = False
 # policy can overfit a SINGLE case at all. True = per-episode domain randomization (needs a
 # big batch to average out draw variance -- that's what drowned the first run).
 DOMAIN_RANDOMIZE = True
+# TRAJECTORY randomization: per episode, sample a (reference, expert-path) pair from the training
+# library (expert_lib.npz via training_pairs). True = generalize over the SAME 56-traj set F1 collected
+# on; False = the single default trajectory (prior behavior). Needs `python expert_reference.py lib` first.
+TRAJ_RANDOMIZE = True
+GUARANTEE_ANCHOR = 1     # like F1's collect: force >= this many NON-quintic episodes/iter (default line +
+                         #   solver-engaging customs). Bump to 2 for two. The rest are sampled from all 56.
 FIXED_DELAYS = [1, 2, 2, 1]
 FIXED_SEED = 12345
 # Held-out deterministic eval scenario: a DIFFERENT seed than FIXED_SEED so DET_loop/DET_load
@@ -56,13 +64,17 @@ LAMBDA = 0.95
 CLIP = 0.2
 LR_ACTOR = 3e-4
 LR_CRITIC = 1e-3
-ENT_COEF = 0.0015            # entropy bonus. 0.0 -> collapse (ent 4->-0.2); 0.01 -> RUNAWAY (ent 4.25->5.4);
-                             #   0.003 STILL crept up 4.5->4.9 while DET_R/load/swing all regressed (entropy
-                             #   bonus out-pushing the tiny task gradient, critic_loss ~0). 0.0015 = floor
-                             #   exploration without inflating it -> want ent to PLATEAU ~4.3, not creep up.
+ENT_COEF = 0.0               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
+                             #   forced ENT_COEF>0 was a REGIME-4 artifact of the JERK term (its penalty was
+                             #   cheapest to cut by shrinking log_std -> killing exploration). With no jerk,
+                             #   nothing pushes entropy down, so 0 works: PPO clip + the Gaussian's natural
+                             #   exploration (LOG_STD_INIT=-1.0) suffice. (regime-4 sweep: 0.0015 floor,
+                             #   0.003 crept up, 0.01 runaway -> all moot without jerk.)
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
-EVAL_EVERY = 2               # every N iters, eval the DETERMINISTIC (mean-action) policy -> true loop_dist
+EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-action) policy on the 2-traj set
+                             #   (line + held-out quintic) -> true loop_dist. Raised 2->4 so the 2-traj mean
+                             #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
 WARMSTART = "residual_mappo_r4base.pt"       # BEST-DET_R checkpoint (the -0.166 policy), NOT _last: _last is the
@@ -88,6 +100,7 @@ def compute_gae(rew, val, done, gamma, lam):
 def estimate_norm(env, rng, n_steps=2500):
     """Roll random actions on the fixed scenario to estimate obs mean/std. The 44-D obs spans
     very different scales (positions ~10, velocities ~40, clock ~1) -> normalization matters."""
+    env.traj, env.expert_pos = None, env.default_expert_pos      # default trajectory (collect may have set another)
     env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)
     obs, _ = env.reset(seed=FIXED_SEED)
     agents = env.possible_agents
@@ -103,36 +116,49 @@ def estimate_norm(env, rng, n_steps=2500):
     return arr.mean(0, keepdims=True), (arr.std(0, keepdims=True) + 1e-6).astype(np.float32)
 
 
-def eval_policy(env, actor, om, os_):
-    """Deterministic (mean-action, no sampling) rollout on a HELD-OUT scenario (EVAL_SEED, distinct
-    from the training FIXED_SEED so we don't score the seed we overfit) -> the TRUE mean loop_dist
-    AND mean load-tracking error, free of exploration noise. Uses actor.forward (the mean)."""
-    env.ctrl_delay = np.asarray(EVAL_DELAYS, dtype=int)
-    obs, _ = env.reset(seed=EVAL_SEED)
-    agents = env.possible_agents
-    loops, loads, swings, rews, speeds, coords, jerks = [], [], [], [], [], [], []
+def eval_policy(env, actor, om, os_, scenarios):
+    """Deterministic (mean-action) eval AVERAGED over `scenarios` = [(label, traj, expert_dpos)] =
+    1 straight line + 1 HELD-OUT quintic. Score = MEAN over the set so best-net selection isn't a single
+    lucky stick (and the held-out quintic makes it a generalization signal too). Same held-out desync
+    (EVAL_SEED/EVAL_DELAYS) per traj. Returns mean metrics + per-traj loop (spread). Uses the mean action."""
     floor = env.epsilon + env.stall_margin              # cruise floor (below = stall risk)
-    k = 0
-    while env.agents:
-        oa = np.stack([obs[a] for a in agents]).astype(np.float32)
-        with torch.no_grad():
-            mean = actor(torch.tensor(((oa - om) / os_).astype(np.float32), device=DEVICE)).cpu().numpy()
-        obs, rewards, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
-        rews.append(np.mean([rewards[a] for a in agents]))  # per-step mean reward (the SELECTION metric)
-        loops.append(np.mean([infos[a]["loop_dist"] for a in agents]))
-        loads.append(infos[agents[0]]["load_err"])          # load pos error is global (same for all drones)
-        swings.append(infos[agents[0]]["load_verr"])        # load VELOCITY error = swing rate
-        coords.append(infos[agents[0]]["coord"])            # ||sum internal force|| (coordination/leak)
-        k += 1
-        if k > env.stall_grace:                             # skip startup (drones spin up from rest, not a stall)
-            speeds.append(infos[agents[0]]["min_speed"])    # slowest drone this step (stall monitor)
-            jerks.append(infos[agents[0]]["jerk"])          # velocity jitter (skip the startup jolt)
-    speeds = np.asarray(speeds)
-    # mean-per-step reward (length-robust: a blowup -> high per-step penalty, not rewarded for a short ep)
-    return dict(reward=float(np.mean(rews)), loop=float(np.mean(loops)),
-                load=float(np.mean(loads)), loadmax=float(np.max(loads)), swing=float(np.mean(swings)),
-                vmin=float(speeds.min()), stallfrac=float((speeds < floor).mean()),
-                coord=float(np.mean(coords)), jerk=float(np.mean(jerks)))
+    per = {k: [] for k in ("reward", "loop", "load", "loadmax", "swing", "vmin", "stallfrac", "coord", "jerk")}
+    per_traj_loop = {}
+    for label, traj, epos in scenarios:
+        env.traj, env.expert_pos = traj, epos           # (collect may have left another traj on the env)
+        env.ctrl_delay = np.asarray(EVAL_DELAYS, dtype=int)
+        obs, _ = env.reset(seed=EVAL_SEED)
+        agents = env.possible_agents
+        loops, loads, swings, rews, speeds, coords, jerks = [], [], [], [], [], [], []
+        k = 0
+        while env.agents:
+            oa = np.stack([obs[a] for a in agents]).astype(np.float32)
+            with torch.no_grad():
+                mean = actor(torch.tensor(((oa - om) / os_).astype(np.float32), device=DEVICE)).cpu().numpy()
+            obs, rewards, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
+            rews.append(np.mean([rewards[a] for a in agents]))   # per-step mean reward (the SELECTION metric)
+            loops.append(np.mean([infos[a]["loop_dist"] for a in agents]))
+            loads.append(infos[agents[0]]["load_err"])           # global (same in every agent's info)
+            swings.append(infos[agents[0]]["load_verr"])
+            coords.append(infos[agents[0]]["coord"])
+            k += 1
+            if k > env.stall_grace:                              # skip startup spin-up (not a stall)
+                speeds.append(infos[agents[0]]["min_speed"])
+                jerks.append(infos[agents[0]]["jerk"])
+        speeds = np.asarray(speeds)
+        per["reward"].append(float(np.mean(rews)));   per["loop"].append(float(np.mean(loops)))
+        per["load"].append(float(np.mean(loads)));    per["loadmax"].append(float(np.max(loads)))
+        per["swing"].append(float(np.mean(swings)));  per["vmin"].append(float(speeds.min()))
+        per["stallfrac"].append(float((speeds < floor).mean()))
+        per["coord"].append(float(np.mean(coords)));  per["jerk"].append(float(np.mean(jerks)))
+        per_traj_loop[label] = float(np.mean(loops))
+    # aggregate across the eval set: MEAN for the selection/tracking metrics; worst-case for the guards.
+    out = dict(reward=float(np.mean(per["reward"])), loop=float(np.mean(per["loop"])),
+               load=float(np.mean(per["load"])), loadmax=float(np.max(per["loadmax"])),
+               swing=float(np.mean(per["swing"])), vmin=float(np.min(per["vmin"])),
+               stallfrac=float(np.max(per["stallfrac"])), coord=float(np.mean(per["coord"])),
+               jerk=float(np.mean(per["jerk"])), per_traj_loop=per_traj_loop)
+    return out
 
 
 def critic_input(env):
@@ -144,17 +170,28 @@ def critic_input(env):
     return np.concatenate([env.state().astype(np.float32), d])
 
 
-def collect(env, actor, critic, n_steps, rng, om, os_):
+def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
     """Roll whole episodes until >= n_steps. Returns per-STEP buffers (obs has an N axis).
-    Actor sees NORMALIZED obs ((obs-om)/os_); raw obs are stored (re-normalized in update)."""
+    Actor sees NORMALIZED obs ((obs-om)/os_); raw obs are stored (re-normalized in update).
+    `pairs` = [(traj, expert_dpos)] training set; per episode we sample one (multi-traj). The FIRST
+    GUARANTEE_ANCHOR episodes are drawn from the NON-quintic anchors (pairs[:n_anchor]) so every iter
+    sees the default line + solver-engaging customs (like F1's collect), the rest from all 56."""
     obs_b, act_b, logp_b = [], [], []      # per step, shape (N, .)
     state_b, val_b, rew_b, done_b = [], [], [], []
     ep_rews, ep_loops = [], []
     n_blowups = 0                          # episodes the guard truncated (state diverged)
 
     agents = env.possible_agents
-    steps = 0
+    steps, ep_i = 0, 0
     while steps < n_steps:
+        # per-episode TRAJECTORY (multi-traj generalization): sample a (reference, expert-path) pair.
+        # Guarantee the first GUARANTEE_ANCHOR episodes are NON-quintic anchors (pairs[:n_anchor]).
+        if TRAJ_RANDOMIZE:
+            hi = n_anchor if ep_i < GUARANTEE_ANCHOR else len(pairs)
+            env.traj, env.expert_pos = pairs[int(rng.integers(hi))]
+        else:
+            env.traj, env.expert_pos = None, env.default_expert_pos
+        # per-episode DESYNC (delays + noise realization).
         if DOMAIN_RANDOMIZE:
             env.ctrl_delay = rng.integers(DELAY_CHOICES[0], DELAY_CHOICES[1] + 1, size=env.n)
             obs, _ = env.reset(seed=int(rng.integers(1 << 30)))
@@ -189,6 +226,7 @@ def collect(env, actor, critic, n_steps, rng, om, os_):
             obs = nobs
             steps += 1
         ep_rews.append(ep_r); ep_loops.append(np.mean(ep_loop))
+        ep_i += 1
 
     return (np.array(obs_b), np.array(act_b), np.array(logp_b),
             np.array(state_b, dtype=np.float32), np.array(val_b, dtype=np.float32),
@@ -200,9 +238,16 @@ def main():
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
 
-    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW)
+    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW, end_time=T_END)   # 35 s: cover full trajs + hold
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
+    env.default_expert_pos = env.expert_pos.copy()   # DEFAULT-traj expert ref (eval/estimate baseline)
+    pairs, n_anchor = training_pairs() if TRAJ_RANDOMIZE else (None, 0)   # (traj, expert_dpos) per traj
+    eval_scen = eval_scenarios()         # [(line), (held-out quintic)] -> mean = the SELECTION metric
+    if TRAJ_RANDOMIZE:
+        print(f"trajectory randomization ON: {len(pairs)} trajs ({n_anchor} non-quintic anchors, "
+              f">= {GUARANTEE_ANCHOR}/iter guaranteed) from expert_lib.npz")
+    print(f"eval on {len(eval_scen)} trajs {[s[0] for s in eval_scen]} (mean = best-net selection metric)")
     state_dim = env.state().shape[0] + env.n     # + privileged per-drone delays (see critic_input)
     obs_dim = env._obs_space.shape[0]
     act_dim = env._act_space.shape[0]         # 10 = delta_lambda(n=4) + delta_wrench(6)
@@ -243,7 +288,8 @@ def main():
       for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
         (obs_b, act_b, logp_b, state_b, val_b, rew_b, done_b,
-         mean_ep_r, mean_loop, n_blowups) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_)
+         mean_ep_r, mean_loop, n_blowups) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_,
+                                                     pairs, n_anchor)
 
         T = len(rew_b)
         advs = np.zeros((T, N), np.float32); rets = np.zeros((T, N), np.float32)
@@ -284,9 +330,10 @@ def main():
         hist_R.append(mean_ep_r); hist_loop.append(mean_loop)
         det_str = ""
         if it == 1 or it == ITERS or it % EVAL_EVERY == 0:
-            e = eval_policy(env, actor, om, os_)
+            e = eval_policy(env, actor, om, os_, eval_scen)
             hist_det_it.append(it); hist_det.append(e["loop"])
-            det_str = (f"  DET_R {e['reward']:.3f}  loop {e['loop']:.3f}  load {e['load']:.3f}"
+            spread = " ".join(f"{lbl[:4]} {v:.3f}" for lbl, v in e["per_traj_loop"].items())
+            det_str = (f"  DET_R {e['reward']:.3f}  loop {e['loop']:.3f} [{spread}]  load {e['load']:.3f}"
                        f"  vmin {e['vmin']:.3f}  stall% {100 * e['stallfrac']:.1f}"
                        f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  jerk {e['jerk']:.3f}")
             if e["reward"] > best_reward:   # select on DETERMINISTIC REWARD (encodes ALL objectives), not
