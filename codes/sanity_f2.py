@@ -17,7 +17,8 @@ from controller import get_reference_trajectory
 N = 4
 env = ResidualMARLEnv()                       # defaults: zero noise, il_actor_prdot_dagger.pt
 obs, infos = env.reset(seed=0)
-zero = {a: np.zeros(3, dtype=np.float32) for a in env.possible_agents}
+zero = {a: np.zeros(env.action_space(a).shape[0], dtype=np.float32)   # [dlam(n), dw(6)] all-zero = no residual
+        for a in env.possible_agents}
 
 t_hist, load_hist, ref_hist = [], [], []
 dpos = [[] for _ in range(N)]

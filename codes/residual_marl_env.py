@@ -37,7 +37,7 @@ from pettingzoo import ParallelEnv
 from fmu_plant_env import FMUPlantEnv
 from controller import error_calculation
 from networks import Actor
-from collect_prdot_data import reconstruct_lp, build_input, LAM0
+from collect_prdot_data import reconstruct_lp, build_input, LAM0, init_lam_history, push_lam, LAM_LP_TAU
 from collect_il_data import clock_features
 
 
@@ -78,7 +78,10 @@ class LocalModelAgent:
         self.intg_eR = np.zeros(3)
         # Local history for the low-pass reconstruction.
         self.prev_f_lp = None
-        self.prev_lam = LAM0.copy()
+        self.prev_lam = LAM0.copy()             # APPLIED (EMA'd) lambda_{t-1}, for the pR_dot reconstruction
+        self.lam_buf = init_lam_history()       # newest-first full-depth applied-lambda buffer (log-tap net input)
+        self.lam_lp = LAM0.copy()               # in-loop EMA state (identical to deploy_prdot's continuity filter)
+        self.lam_a = None if LAM_LP_TAU is None else self.dt / (LAM_LP_TAU + self.dt)
 
     def wrench_control(self, ep, eR, ev, ew, ang_vel):
         """Analytic PID -> desired 6-D load wrench w_d (kept from the classical law)."""
@@ -105,15 +108,21 @@ class LocalModelAgent:
                                                 self.dt, self.recon_alpha)
         self._w_d, self._G_pinv, self._Nmat, self._f_lp = w_d, G_pinv, Nmat, f_lp
         self._vR = vR                                   # stash for diagnostics (own pR_dot)
-        return build_input(t, vR, self.prev_lam)
+        return build_input(t, vR, self.lam_buf)         # 66-D log-tap input (taps the full-depth buffer)
 
     def finalize(self, lam):
-        """Phase 2 (per drone): distribute forces from THIS drone's whole lambda vector,
-        REUSING the G+/N built in prepare (f = G+ w_d + N lambda, no recompute). Rolls the
-        local history forward. Returns the FULL (3n,) force; caller keeps its own slice."""
+        """Phase 2 (per drone): EMA the net's lambda (identical to deploy_prdot's in-loop low-pass —
+        the net was TRAINED against this filtered feedback), distribute forces from the APPLIED lambda
+        REUSING the G+/N built in prepare (f = G+ w_d + N lambda, no recompute), and roll the local
+        history (prev_lam + full-depth log-tap buffer). Returns the FULL (3n,) force; the caller keeps
+        its own slice, and the env adds the residual delta_f AFTER this, in force space."""
+        if self.lam_a is not None:                      # in-loop EMA (soft warm-start continuity)
+            self.lam_lp = self.lam_a * lam + (1.0 - self.lam_a) * self.lam_lp
+            lam = self.lam_lp
         f_full = self._G_pinv @ self._w_d + self._Nmat @ lam
         self.prev_f_lp = self._f_lp                     # roll filtered force
-        self.prev_lam = lam.copy()                      # roll lambda
+        self.prev_lam = lam.copy()                      # roll APPLIED lambda (recon feedback)
+        self.lam_buf = push_lam(self.lam_buf, lam)      # roll APPLIED lambda into the log-tap history
         return f_full
 
 
@@ -239,7 +248,9 @@ class ResidualMARLEnv(ParallelEnv):
         # The net + normalization live on the env so the N per-drone rows can be run in
         # ONE batched forward; each LocalModelAgent owns only its geometry + history.
         ckpt = torch.load(policy_path, map_location="cpu", weights_only=False)
-        self.net = Actor(obs_dim=ckpt["obs_mean"].shape[1], act_dim=self.n)
+        hidden = tuple(ckpt.get("hidden", (128, 128)))        # match the F1 ckpt's capacity (256,256 for
+        self.net = Actor(obs_dim=ckpt["obs_mean"].shape[1],   #   the log-tap net); pre-"hidden" ckpts = (128,128)
+                         act_dim=self.n, hidden=hidden)
         self.net.load_state_dict(ckpt["state_dict"])
         self.net.eval()
         self.obs_mean = ckpt["obs_mean"].astype(np.float32)   # (1, obs_dim)

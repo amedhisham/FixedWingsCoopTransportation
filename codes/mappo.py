@@ -26,7 +26,7 @@ from networks import Actor, Critic
 
 # --- desync spec (training distribution; matches the plan) ---
 DESYNC = dict(pos_noise=0.03, vel_noise=0.10, noise_corr=0.995)
-DELAY_CHOICES = (1, 2)
+DELAY_CHOICES = (0, 2)
 
 # ABLATION: True = delta_lambda-ONLY (zero the delta_wrench/load-trim head). Tests whether dw earns
 # its keep or is just a load-disturbing stall crutch (removing it should drop swing toward base ~0.10).
