@@ -32,10 +32,10 @@ from mappo import DESYNC as TRAIN_DESYNC          # the training noise levels
 
 N = 4
 EPSILON = 0.25
-MODE = "NOISY"             # "PURE" (vs ideal, no noise) | "NOISY" (vs base controller under noise)
+MODE = "PURE"             # "PURE" (vs ideal, no noise) | "NOISY" (vs base controller under noise)
 SHOWCASE_KIND = "long"    # "short" (25 s) | "long" (35 s)
-SHOWCASE_IDX = 0          # trajectory in showcase_set(KIND): 0 = line, 1.. = quintics
-POLICY_PATH = "residual_mappo_r4base.pt"   # trained residual to evaluate
+SHOWCASE_IDX = 1          # trajectory in showcase_set(KIND): 0 = line, 1.. = quintics
+POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate
 ZERO_DW = False           # zero the delta_wrench head at apply -> delta_lambda-only ablation
 
 # Held-out disturbance scenario (never trained on): different noise seed + delay assignment.

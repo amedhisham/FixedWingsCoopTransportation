@@ -35,7 +35,8 @@ from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
 from fmu_plant_env import FMUPlantEnv
-from controller import error_calculation
+from controller import error_calculation, get_reference_trajectory
+from optimizer import calculate_grasp_and_nullspace
 from networks import Actor
 from collect_prdot_data import reconstruct_lp, build_input, LAM0, init_lam_history, push_lam, LAM_LP_TAU
 from collect_il_data import clock_features
@@ -141,7 +142,7 @@ class ResidualMARLEnv(ParallelEnv):
         #   delta_lambda enters via N   -> nullspace -> reshapes drone trajectory, load-neutral.
         #   delta_wrench  enters via G+ -> range     -> trims the desired wrench, fixes load.
         #   Built in force space as [G+ @ dw + N @ dlam] so the two subspaces stay clean.
-        cap_lam=0.4,       # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.74N/drone nullspace
+        cap_lam=0.5,       # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.74N/drone nullspace
                            #   force (base null slice ~1.85N). Authority to reshape the loop; the blowup
                            #   guard (not this cap) prevents crashes, so this is set for AUTHORITY.
         cap_w=0.2,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
@@ -149,6 +150,17 @@ class ResidualMARLEnv(ParallelEnv):
                            #   swing term below (a louder reward into a capped actuator does nothing).
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
         blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
+        overspeed_w=0.2,  # SPEED CEILING (dense blowup guardrail). Mirror of the stall FLOOR on the high side:
+                           #   penalize ||v|| > overspeed_v. The blowup (tension collapse -> v explodes 19->37->
+                           #   guard@100) had ONLY the SPARSE terminal -blowup_penalty -> no gradient on the
+                           #   APPROACH, so the MEAN policy never learned MARGIN (blows up even in det eval).
+                           #   This gives DENSE gradient on the ramp -> teaches the policy to back off. Zero in
+                           #   normal ops (cruise ~1.4, aggressive maneuvers <~4 << overspeed_v) -> can't disturb
+                           #   tracking. NOTE: fixes SAFETY (divergence), NOT tracking quality.
+        overspeed_v=4.0,   # ceiling threshold: above normal maneuvering (<~4), below the collapse spikes (19-37).
+        overspeed_cap=30.0,  # cap on the per-step (v-v_ceil)^2 (like jerk_cap): keeps dense gradient in the
+                             #   RECOVERABLE band (v~8-13.5 at w=10) w/o a giant advantage-variance spike once
+                             #   it's already diverging past saving (a bigger SPARSE spike just thrashes PPO).
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
         # CURRENT = REGIME 1 (rebuild the working curriculum on the multi-traj base): expert/manifold +
         # LIGHT stall (50, PLAIN relu(eps-v)^2) + load. Regime 2 -> stall_w 50->300. Regime 3 -> stall_w
@@ -191,6 +203,14 @@ class ResidualMARLEnv(ParallelEnv):
                            #   w=3 = GENTLE retry: does coord drop WITHOUT wrecking tracking, and does swing
                            #   then fall? If swing still doesn't fall at gentle w -> leak isn't the swing
                            #   cause (maybe TORQUE leak / inherent desync) -> abandon coord for swing.
+        leak_w=1.0,        # FULL-WRENCH coordination leak: ||G_true @ f_int||^2 (6-D force+TORQUE), the
+                           #   torque-aware version of coord_w (which was force-only/torque-blind). f_int =
+                           #   assembled applied INTERNAL (nullspace) forces; =0 iff drones' lambdas coordinate.
+                           #   Penalizes the leak at its SOURCE (before the load PID hides it) -> a stronger,
+                           #   less-delayed signal than load_err. Isolates the NULLSPACE (doesn't touch the dw
+                           #   range/load-trim). Paired with the desired-load-state OBS (the "ability"): the
+                           #   incentive to coordinate + the info to do it. START GENTLE (~manifold_w); history
+                           #   says coordination terms STEAMROLL tracking if >> manifold_w (coord_w=50 disaster).
         expert_ref="expert_ref.npz",
         # --- classical config ---
         epsilon=0.25,
@@ -216,6 +236,8 @@ class ResidualMARLEnv(ParallelEnv):
         self.cap_w = cap_w
         self.blowup_v = blowup_v
         self.blowup_penalty = blowup_penalty
+        self.overspeed_w, self.overspeed_v, self.overspeed_cap = overspeed_w, overspeed_v, overspeed_cap
+        self.leak_w = leak_w
         self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
         self.swing_w = swing_w
         self.coord_w = coord_w
@@ -273,7 +295,7 @@ class ResidualMARLEnv(ParallelEnv):
         # obs = load est(18) + own drone(6) + own f_g(3) + own f_lambda(3) + clock(14) = 44 ;
         # action = [delta_lambda(n), delta_wrench(6)].  clock features = loiter PHASE (zero-comms).
         self._clock_dim = clock_features(0.0).shape[0]
-        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30 + self._clock_dim,), dtype=np.float32)
+        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(48 + self._clock_dim,), dtype=np.float32)
         self._act_space = spaces.Box(-1.0, 1.0, shape=(self.n + 6,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
@@ -357,7 +379,10 @@ class ResidualMARLEnv(ParallelEnv):
             self._estimates.append((p, Rn, v, w))
 
     def _build_obs(self, obs42):
-        """Per-agent 24-D residual-policy observation: sensed load(18) + own drone(6)."""
+        """Per-agent residual-policy observation: sensed load(18) + own drone(6) + base force slices
+        f_g(3)+f_lam(3) + DESIRED load state(18) + clock phase. The desired load state is the SHARED
+        reference (same for every drone) -> it gives the residual its target WITHOUT inter-drone info;
+        pairs with the leak_w reward (the incentive) as the ability to coordinate on the load goal."""
         out = {}
         for i, name in enumerate(self.possible_agents):
             p, R, v, w = self._estimates[i]
@@ -367,9 +392,11 @@ class ResidualMARLEnv(ParallelEnv):
             own = np.concatenate([dpos, dvel])
             if self.own_noise > 0:
                 own = own + self.np_random.normal(0, self.own_noise, own.shape)
+            pd, vd, Rd, wd = get_reference_trajectory(self.t + self.clock_offset[i], self.traj)
+            des18 = np.concatenate([pd, np.asarray(Rd).flatten(order="C"), vd, wd])   # DESIRED load state
             clk = clock_features(self.t + self.clock_offset[i])   # loiter PHASE (per-drone clock)
-            # + base force decomposition slices (one-step lag) + clock phase.
-            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk]).astype(np.float32)
+            # + base force decomposition slices (one-step lag) + desired load state + clock phase.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], des18, clk]).astype(np.float32)
         return out
 
     # ---- PettingZoo API ----
@@ -383,6 +410,8 @@ class ResidualMARLEnv(ParallelEnv):
 
         self.t = 0.0
         self._step = 0
+        self._sat_lam = np.zeros(self.n)     # residual cap-saturation ratios (diagnostic; filled in step)
+        self._sat_w = np.zeros(self.n)
         self._state_buffer = deque(maxlen=int(self.ctrl_delay.max()) + 1)
         # per-step delay JITTER: each drone's staleness is a bounded random walk in [0, ctrl_delay_i]
         # (not fixed for the whole episode) -> a drone falls behind then catches up, as in reality.
@@ -438,19 +467,28 @@ class ResidualMARLEnv(ParallelEnv):
         f_cmd = f_base.copy()
         delta_f = {}
         net_fint = np.zeros(3)               # sum of applied internal (nullspace) force slices -> COORDINATION
+        f_int = np.zeros(3 * self.n)         # FULL assembled applied internal-force vector -> leak WRENCH (G@f_int)
         for i, name in enumerate(self.possible_agents):
             a = np.asarray(actions[name], dtype=float)
-            dlam = self._clip_norm(a[:self.n],        self.cap_lam * np.linalg.norm(lams[i]))
-            dw   = self._clip_norm(a[self.n:self.n+6], self.cap_w   * np.linalg.norm(self.locals[i]._w_d))
+            cap_lam_i = self.cap_lam * np.linalg.norm(lams[i])         # this drone's dlam cap NORM
+            cap_w_i   = self.cap_w   * np.linalg.norm(self.locals[i]._w_d)
+            # SATURATION = raw head norm / cap. >=1 -> the residual is CLIPPED (wants more authority than the
+            # cap allows) -> AUTHORITY-limited. Logged in info (diagnostic-only; actor never sees info).
+            self._sat_lam[i] = float(np.linalg.norm(a[:self.n])       / (cap_lam_i + 1e-12))
+            self._sat_w[i]   = float(np.linalg.norm(a[self.n:self.n+6]) / (cap_w_i + 1e-12))
+            dlam = self._clip_norm(a[:self.n],        cap_lam_i)
+            dw   = self._clip_norm(a[self.n:self.n+6], cap_w_i)
             if self.disable_dw:                       # delta_lambda-only ablation: no load-space trim
                 dw = np.zeros_like(dw)
             nulls = self.locals[i]._Nmat @ dlam                       # residual nullspace force (3n,)
             df_full = self.locals[i]._G_pinv @ dw + nulls            # (3n,) range + null
             df = df_full[3 * i: 3 * i + 3]
             f_cmd[3 * i: 3 * i + 3] = f_base[3 * i: 3 * i + 3] + df
-            net_fint += self._flam[i] + nulls[3 * i: 3 * i + 3]      # total applied internal force, this drone
+            f_int[3 * i: 3 * i + 3] = self._flam[i] + nulls[3 * i: 3 * i + 3]   # this drone's applied internal force
+            net_fint += f_int[3 * i: 3 * i + 3]                     # total applied internal force, this drone
             delta_f[name] = df
         self._net_fint = net_fint            # =0 iff internal forces cancel (coordinated); leak disturbs load
+        self._f_int = f_int                  # full vector -> full-wrench leak G_true @ f_int (leak_w reward)
 
         # --- 3. Actuation noise (optional). ---
         if self.actuation_noise > 0:
@@ -492,6 +530,11 @@ class ResidualMARLEnv(ParallelEnv):
         load_err2 = float(ep @ ep)
         swing2 = float(ev @ ev)          # load velocity-error -> damping/smoothness signal (global)
         coord2 = float(self._net_fint @ self._net_fint)   # ||sum internal force||^2 -> coordination/leak (global)
+        # FULL-WRENCH leak: net wrench the applied INTERNAL forces put on the load via the TRUE geometry.
+        # =0 iff the drones' nullspace forces coordinate; unlike coord2 this SEES the torque leak too.
+        G_true = calculate_grasp_and_nullspace(nR, self.locals[0].Bb, self.n)[0]   # 6 x 3n true grasp
+        leak_wrench = G_true @ self._f_int                # 6-D (force + torque)
+        leak2 = float(leak_wrench @ leak_wrench)
         idx = min(self._step, self.expert_pos.shape[1] - 1)   # current step -> phase-correct expert point
         v_cur = obs42[18 + 3 * self.n: 18 + 6 * self.n].reshape(self.n, 3)   # drone velocity vectors
         # per-drone JERK = ||v_t - 2 v_{t-1} + v_{t-2}||^2 (needs 2 steps of history + past startup grace)
@@ -507,9 +550,12 @@ class ResidualMARLEnv(ParallelEnv):
             d_stall = max(0.0, (self.epsilon + self.stall_margin) - v_i)   # depth below CRUISE floor (eps+margin)
             stall = 0.0 if self._step <= self.stall_grace else d_stall ** 2 + self.stall_lin * d_stall
             jerk2 = min(float(jerk_vec[i] @ jerk_vec[i]), self.jerk_cap)   # per-drone jerk, CLIPPED (see jerk_cap)
+            over = max(0.0, v_i - self.overspeed_v)                        # depth ABOVE the speed ceiling
+            over2 = min(over * over, self.overspeed_cap)                   # CLIPPED (see overspeed_cap)
             rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall
                               + self.load_w * load_err2 + self.swing_w * swing2
-                              + self.coord_w * coord2 + self.jerk_w * jerk2)
+                              + self.coord_w * coord2 + self.jerk_w * jerk2
+                              + self.overspeed_w * over2 + self.leak_w * leak2)
             loop_d[name] = d2 ** 0.5
         self._v_prev2 = self._v_prev1        # roll velocity history for next step's jerk
         self._v_prev1 = v_cur
@@ -530,7 +576,10 @@ class ResidualMARLEnv(ParallelEnv):
                         "load_verr": load_verr,
                         "min_speed": min_speed,
                         "coord": coord,
-                        "jerk": jerk}
+                        "jerk": jerk,
+                        "sat_lam": self._sat_lam[i],       # residual cap saturation (>=1 -> clipped) — diagnostic
+                        "sat_w": self._sat_w[i],
+                        "leak": leak2 ** 0.5}              # ||G_true @ f_int|| full-wrench coordination leak (monitor)
                  for i, name in enumerate(self.possible_agents)}
 
         if truncated:
