@@ -168,16 +168,16 @@ class ResidualMARLEnv(ParallelEnv):
         manifold_w=1.0,    # distance to the expert loiter loop -> served by delta_lambda. Back to the PROVEN
                            #   value (regime-4 0.5 was marginal + muddied comparisons) so the delta_w ablation
                            #   is a clean single variable against the split1 baseline reward.
-        stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
+        stall_w=400.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
                            #   d^2 + stall_lin*d, d=relu(eps+margin-v). 400 was OVERKILL: it drowned every
                            #   other term (jerk/swing became rounding errors) AND drove entropy collapse
                            #   (ent 4->-0.2, exploration died). The hinge+margin already give a firm bite
                            #   (~8.6 at a 0.15 dip) at w=50 -> stall stays enforced without steamrolling.
-        stall_lin=0.0,     # linear-hinge coefficient (see stall_w). REGIME 1: OFF (plain quadratic floor);
+        stall_lin=1.0,     # linear-hinge coefficient (see stall_w). REGIME 1: OFF (plain quadratic floor);
                            #   REGIME 3 sets this to 1.0 (the hinge). Raise to push the margin harder.
         stall_grace=20,    # skip stall penalty for the first N steps: drones accelerate from ~rest at reset,
                            #   an UNAVOIDABLE dip -> don't penalize it (lets stall_w be big without blowing up R).
-        stall_margin=0.0,  # REGIME 1: OFF (penalize only below the true epsilon). REGIME 3 sets ~0.05 to
+        stall_margin=0.05,  # REGIME 1: OFF (penalize only below the true epsilon). REGIME 3 sets ~0.05 to
                            #   penalize below (epsilon + margin) -> drones cruise with a BUFFER, never graze it.
         load_w=10.0,       # load-tracking. Back to moderate: it no longer has to bully one actuator —
                            #   delta_wrench is its dedicated knob, so tracking (delta_lambda) is conflict-free.
@@ -203,7 +203,8 @@ class ResidualMARLEnv(ParallelEnv):
                            #   w=3 = GENTLE retry: does coord drop WITHOUT wrecking tracking, and does swing
                            #   then fall? If swing still doesn't fall at gentle w -> leak isn't the swing
                            #   cause (maybe TORQUE leak / inherent desync) -> abandon coord for swing.
-        leak_w=1.0,        # FULL-WRENCH coordination leak: ||G_true @ f_int||^2 (6-D force+TORQUE), the
+        leak_w=0.0,         # REVERTED (off): the leak REWARD experiment underperformed the old net.
+                            # (was 0.05) FULL-WRENCH coordination leak: ||G_true @ f_int||^2 (6-D force+TORQUE), the
                            #   torque-aware version of coord_w (which was force-only/torque-blind). f_int =
                            #   assembled applied INTERNAL (nullspace) forces; =0 iff drones' lambdas coordinate.
                            #   Penalizes the leak at its SOURCE (before the load PID hides it) -> a stronger,
@@ -295,7 +296,7 @@ class ResidualMARLEnv(ParallelEnv):
         # obs = load est(18) + own drone(6) + own f_g(3) + own f_lambda(3) + clock(14) = 44 ;
         # action = [delta_lambda(n), delta_wrench(6)].  clock features = loiter PHASE (zero-comms).
         self._clock_dim = clock_features(0.0).shape[0]
-        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(48 + self._clock_dim,), dtype=np.float32)
+        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30 + self._clock_dim,), dtype=np.float32)
         self._act_space = spaces.Box(-1.0, 1.0, shape=(self.n + 6,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
@@ -380,9 +381,7 @@ class ResidualMARLEnv(ParallelEnv):
 
     def _build_obs(self, obs42):
         """Per-agent residual-policy observation: sensed load(18) + own drone(6) + base force slices
-        f_g(3)+f_lam(3) + DESIRED load state(18) + clock phase. The desired load state is the SHARED
-        reference (same for every drone) -> it gives the residual its target WITHOUT inter-drone info;
-        pairs with the leak_w reward (the incentive) as the ability to coordinate on the load goal."""
+        f_g(3)+f_lam(3) + clock phase (30 + clock; deployable, zero inter-drone info)."""
         out = {}
         for i, name in enumerate(self.possible_agents):
             p, R, v, w = self._estimates[i]
@@ -392,11 +391,9 @@ class ResidualMARLEnv(ParallelEnv):
             own = np.concatenate([dpos, dvel])
             if self.own_noise > 0:
                 own = own + self.np_random.normal(0, self.own_noise, own.shape)
-            pd, vd, Rd, wd = get_reference_trajectory(self.t + self.clock_offset[i], self.traj)
-            des18 = np.concatenate([pd, np.asarray(Rd).flatten(order="C"), vd, wd])   # DESIRED load state
             clk = clock_features(self.t + self.clock_offset[i])   # loiter PHASE (per-drone clock)
-            # + base force decomposition slices (one-step lag) + desired load state + clock phase.
-            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], des18, clk]).astype(np.float32)
+            # + base force decomposition slices (one-step lag) + clock phase.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk]).astype(np.float32)
         return out
 
     # ---- PettingZoo API ----

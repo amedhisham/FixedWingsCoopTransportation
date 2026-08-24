@@ -72,20 +72,15 @@ ENT_COEF = 0.0               # REGIME 1: back to 0 (the original GitHub value). 
                              #   0.003 crept up, 0.01 runaway -> all moot without jerk.)
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
-HIDDEN = (256, 128, 64)      # actor+critic width, bumped from (128,128) with the desired-state OBS + leak
-                             #   REWARD (harder coordination task; cold-start = free to resize). FUNNEL: taper
-                             #   forces a compact representation, moderate params. If PPO RINGS/destabilizes,
-                             #   depth is the first suspect to revisit (deeper tanh = harder credit assignment).
+HIDDEN = (128, 128)          # actor+critic width — OLD-NET arch (networks.py default), matches r4base.
+                             #   Reverted from the (256,128,64) desired-state + leak experiment.
 EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-action) policy on the 2-traj set
                              #   (line + held-out quintic) -> true loop_dist. Raised 2->4 so the 2-traj mean
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = None       # COLD START (required): obs 44->62 (desired-state) + net (128,128)->(256,128,64) both
-                       #   changed, so no old ckpt loads. Clean read of the desired-state OBS + leak REWARD from
-                       #   the safe base, no inherited bad-coordination basin. Was: "residual_mappo_gt2.pt".
-                                       #   resume/last-step state, always PAST the peak when the policy is
-                                       #   drifting -> resuming from it gives back the gain (cost us run 2).
+WARMSTART = "residual_mappo.pt"   # OLD-NET best (the -0.166 DET_R policy) — regime-2 warm-start.
+                                         #   Arch/obs reverted to match it. CHANGE if you meant a different old ckpt.
 
 
 def compute_gae(rew, val, done, gamma, lam):
@@ -103,21 +98,26 @@ def compute_gae(rew, val, done, gamma, lam):
     return adv, ret
 
 
-def estimate_norm(env, rng, n_steps=2500):
-    """Roll random actions on the fixed scenario to estimate obs mean/std. The 44-D obs spans
-    very different scales (positions ~10, velocities ~40, clock ~1) -> normalization matters."""
-    env.traj, env.expert_pos = None, env.default_expert_pos      # default trajectory (collect may have set another)
-    env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)
-    obs, _ = env.reset(seed=FIXED_SEED)
+def estimate_norm(env, rng, pairs, n_traj=6):
+    """Obs mean/std from BASE (zero-residual) rollouts across a SAMPLE of trajectories -- NOT just the
+    default line. CRUCIAL for the DESIRED-STATE obs dims: they are EXACTLY constant on the line (y/z/roll/
+    pitch/omega -> std~0), so line-only normalization made those dims ~1e6 on quintics (net garbage -> the
+    quintic THRASH). Sampling quintics gives them real spread. ZERO action so episodes survive the FULL
+    trajectory -> the MOVED desired-state (t~20-30s) is covered; sensing noise + base dynamics spread the
+    rest. (Random actions would blow up early -> only cover t~0 -> wouldn't fix the moved-reference dims.)"""
     agents = env.possible_agents
     ad = env._act_space.shape[0]
-    buf, steps = [], 0
-    while steps < n_steps and env.agents:
-        acts = {a: rng.normal(0, 0.3, size=ad).astype(np.float32) for a in agents}
-        obs, *_ = env.step(acts)
-        for a in agents:
-            buf.append(obs[a])
-        steps += 1
+    zero = {a: np.zeros(ad, np.float32) for a in agents}
+    buf = []
+    for _ in range(n_traj):
+        env.traj, env.expert_pos = pairs[int(rng.integers(len(pairs)))] if pairs is not None \
+            else (None, env.default_expert_pos)
+        env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)
+        obs, _ = env.reset(seed=int(rng.integers(1 << 30)))
+        while env.agents:
+            obs, *_ = env.step(zero)
+            for a in agents:
+                buf.append(obs[a])
     arr = np.asarray(buf, dtype=np.float32)
     return arr.mean(0, keepdims=True), (arr.std(0, keepdims=True) + 1e-6).astype(np.float32)
 
@@ -289,7 +289,7 @@ def main():
                 crit_msg = " + critic REINIT (state_dim changed)"
         print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg})")
     else:
-        om, os_ = estimate_norm(env, rng)     # random-rollout obs normalization (mixed-scale {obs_dim}-D)
+        om, os_ = estimate_norm(env, rng, pairs)   # base-rollout norm over SAMPLED trajs (covers desired-state)
         print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
     om_t = torch.tensor(om, device=DEVICE); os_t = torch.tensor(os_, device=DEVICE)
     actor.log_std.data.fill_(LOG_STD_INIT)      # set exploration scale (overrides warm-start's)

@@ -35,12 +35,23 @@ EPSILON = 0.25
 MODE = "PURE"             # "PURE" (vs ideal, no noise) | "NOISY" (vs base controller under noise)
 SHOWCASE_KIND = "long"    # "short" (25 s) | "long" (35 s)
 SHOWCASE_IDX = 1          # trajectory in showcase_set(KIND): 0 = line, 1.. = quintics
-POLICY_PATH = "residual_mappo.pt"   # trained residual to evaluate
+POLICY_PATH = "residual_mappo_gt2.pt"   # trained residual to evaluate
 ZERO_DW = False           # zero the delta_wrench head at apply -> delta_lambda-only ablation
 
 # Held-out disturbance scenario (never trained on): different noise seed + delay assignment.
 GEN_SEED = 8888
 GEN_DELAYS = [2, 2, 2, 2]   
+
+
+def _set_axes_equal_3d(ax):
+    """Equal aspect ratio for a 3D axes (mpl's axis('equal') is a no-op in 3D). Keeps the desync
+    spiral from being squashed into a Z-flat pancake by an auto-scaled aspect."""
+    limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+    centers = limits.mean(axis=1)
+    radius = 0.5 * (limits[:, 1] - limits[:, 0]).max()
+    ax.set_xlim3d(centers[0] - radius, centers[0] + radius)
+    ax.set_ylim3d(centers[1] - radius, centers[1] + radius)
+    ax.set_zlim3d(centers[2] - radius, centers[2] + radius)
 
 
 def load_policy(path):
@@ -129,15 +140,20 @@ if __name__ == "__main__":
     e_cmp = np.linalg.norm(cmp_["load"] - cmp_["ref"], axis=1)
     print(f"  {lbl_cmp:32s}: load-track mean {e_cmp.mean():.4f} m  max {e_cmp.max():.4f} m")
 
-    # 1. Drone XY — RL solid, comparison FADED. NOISY -> RL loops vs base SPIRAL; PURE -> vs ideal loops.
-    plt.figure(figsize=(8, 6))
+    # 1. Drone XYZ (3D) — RL solid, comparison FADED. NOISY -> RL loops vs base SPIRAL; PURE -> vs ideal loops.
+    #    3D because the quintic showcase moves significantly in Z; the desync failure is invisible in a flat XY.
+    fig1 = plt.figure(figsize=(9, 7))
+    ax3d = fig1.add_subplot(111, projection="3d")
     for i in range(N):
-        plt.plot(cmp_["dpos"][i][:, 0], cmp_["dpos"][i][:, 1], color=f"C{i}", lw=2.6, alpha=0.28)
-        plt.plot(rl["dpos"][i][:, 0], rl["dpos"][i][:, 1], color=f"C{i}", lw=1.3, label=f"Drone {i+1}")
-    plt.plot(rl["load"][:, 0], rl["load"][:, 1], "k--", lw=2, label="Load")
-    plt.xlabel("X (m)"); plt.ylabel("Y (m)")
-    plt.title(f"Drone XY — {lbl_rl} (solid) vs {lbl_cmp} (faded)\n{SHOWCASE_KIND} #{SHOWCASE_IDX}: {label}")
-    plt.legend(); plt.grid(True); plt.axis("equal")
+        ax3d.plot(cmp_["dpos"][i][:, 0], cmp_["dpos"][i][:, 1], cmp_["dpos"][i][:, 2],
+                  color=f"C{i}", lw=2.6, alpha=0.28)
+        ax3d.plot(rl["dpos"][i][:, 0], rl["dpos"][i][:, 1], rl["dpos"][i][:, 2],
+                  color=f"C{i}", lw=1.3, label=f"Drone {i+1}")
+    ax3d.plot(rl["load"][:, 0], rl["load"][:, 1], rl["load"][:, 2], "k--", lw=2, label="Load")
+    ax3d.set_xlabel("X (m)"); ax3d.set_ylabel("Y (m)"); ax3d.set_zlabel("Z (m)")
+    ax3d.set_title(f"Drone XYZ — {lbl_rl} (solid) vs {lbl_cmp} (faded)\n{SHOWCASE_KIND} #{SHOWCASE_IDX}: {label}")
+    ax3d.legend()
+    _set_axes_equal_3d(ax3d)
 
     # 2. Drone velocity norms — RL solid, comparison FADED. NOISY base -> spikes/tension collapse.
     plt.figure()
@@ -163,13 +179,15 @@ if __name__ == "__main__":
     plt.xlabel("Time (s)"); plt.ylabel("||load - reference|| (m)")
     plt.title("Load tracking error (RL residual)"); plt.legend(); plt.grid(True)
 
-    # 5. (curiosity) The LOAD's OWN XY path — separate so you can see what the load itself does under
+    # 5. (curiosity) The LOAD's OWN XYZ (3D) path — separate so you can see what the load itself does under
     #    the comparison baseline (noised controller in NOISY) vs RL vs the reference, uncluttered by drones.
-    plt.figure(figsize=(8, 6))
-    plt.plot(rl["ref"][:, 0], rl["ref"][:, 1], "k--", lw=2, label="reference")
-    plt.plot(cmp_["load"][:, 0], cmp_["load"][:, 1], "r", lw=1.4, label=f"load — {lbl_cmp}")
-    plt.plot(rl["load"][:, 0], rl["load"][:, 1], "b", lw=1.4, label=f"load — {lbl_rl}")
-    plt.xlabel("X (m)"); plt.ylabel("Y (m)")
-    plt.title("Load XY trajectory"); plt.legend(); plt.grid(True); plt.axis("equal")
+    fig5 = plt.figure(figsize=(9, 7))
+    ax5 = fig5.add_subplot(111, projection="3d")
+    ax5.plot(rl["ref"][:, 0], rl["ref"][:, 1], rl["ref"][:, 2], "k--", lw=2, label="reference")
+    ax5.plot(cmp_["load"][:, 0], cmp_["load"][:, 1], cmp_["load"][:, 2], "r", lw=1.4, label=f"load — {lbl_cmp}")
+    ax5.plot(rl["load"][:, 0], rl["load"][:, 1], rl["load"][:, 2], "b", lw=1.4, label=f"load — {lbl_rl}")
+    ax5.set_xlabel("X (m)"); ax5.set_ylabel("Y (m)"); ax5.set_zlabel("Z (m)")
+    ax5.set_title("Load XYZ trajectory"); ax5.legend()
+    _set_axes_equal_3d(ax5)
 
     plt.show()
