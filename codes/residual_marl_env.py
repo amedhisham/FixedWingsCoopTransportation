@@ -168,7 +168,7 @@ class ResidualMARLEnv(ParallelEnv):
         manifold_w=1.0,    # distance to the expert loiter loop -> served by delta_lambda. Back to the PROVEN
                            #   value (regime-4 0.5 was marginal + muddied comparisons) so the delta_w ablation
                            #   is a clean single variable against the split1 baseline reward.
-        stall_w=400.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
+        stall_w=50.0,      # one-sided floor: penalize ||v|| < epsilon (fixed-wing STALL). Penalty =
                            #   d^2 + stall_lin*d, d=relu(eps+margin-v). 400 was OVERKILL: it drowned every
                            #   other term (jerk/swing became rounding errors) AND drove entropy collapse
                            #   (ent 4->-0.2, exploration died). The hinge+margin already give a firm bite
@@ -293,10 +293,20 @@ class ResidualMARLEnv(ParallelEnv):
         self.llc_alpha = step_size / (0.2 + step_size)
         self._Fz = self.mass * 9.81 / self.n
 
-        # obs = load est(18) + own drone(6) + own f_g(3) + own f_lambda(3) + clock(14) = 44 ;
+        # obs = load est(18) + own drone(6) + own f_g(3) + own f_lambda(3) + clock(14) = 44
+        #     + HISTORY: 2 delta frames x 18 = 36  ->  80.  Each delta frame = the change in the
+        #       (own state + load state) 24-subset over one step, computed IN the env (geometrically
+        #       correct: load ROTATION delta = so3_log(R_prev^T R_cur), a 3-vec, NOT elementwise R-sub).
+        #       Delta frame layout (18): d_load_pos(3), so3_log(dR)(3), d_load_vel(3), d_load_w(3),
+        #       d_own_pos(3), d_own_vel(3). Frame1 = cur-prev, Frame2 = prev-prev2 (lossless: cur + the
+        #       two deltas reconstruct both past absolutes -> the full delayed/noisy sequence, POMDP signal).
+        #       force/clock carry NO history (constant-ish / already-a-clock). PER-DRONE (each drone's own
+        #       sensed stream). Zeros at reset / first steps (no history yet) -> matches the zero-padded net.
         # action = [delta_lambda(n), delta_wrench(6)].  clock features = loiter PHASE (zero-comms).
         self._clock_dim = clock_features(0.0).shape[0]
-        self._obs_space = spaces.Box(-np.inf, np.inf, shape=(30 + self._clock_dim,), dtype=np.float32)
+        self._hist_dim = 2 * 18                                # 2 delta frames of the 24-subset (R->3 via log)
+        self._obs_space = spaces.Box(-np.inf, np.inf,
+                                     shape=(30 + self._clock_dim + self._hist_dim,), dtype=np.float32)
         self._act_space = spaces.Box(-1.0, 1.0, shape=(self.n + 6,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
@@ -379,10 +389,33 @@ class ResidualMARLEnv(ParallelEnv):
             Rn = self._project_SO3(R0 + self._noise_rot[i]) if self.rot_noise > 0 else R0
             self._estimates.append((p, Rn, v, w))
 
+    @staticmethod
+    def _so3_log(Rd):
+        """Rotation vector (axis*angle) of Rd in SO(3) = the geometrically-correct 'delta' of a rotation.
+        Small-angle safe. For a relative rotation Rd = R_prev^T R_cur this ~ omega*dt (the body-frame twist)."""
+        tr = np.clip((np.trace(Rd) - 1.0) / 2.0, -1.0, 1.0)
+        theta = np.arccos(tr)
+        w = np.array([Rd[2, 1] - Rd[1, 2],
+                      Rd[0, 2] - Rd[2, 0],
+                      Rd[1, 0] - Rd[0, 1]])
+        if theta < 1e-6:                       # log ~ vee(Rd - Rd^T)/2
+            return 0.5 * w
+        return (theta / (2.0 * np.sin(theta))) * w
+
+    def _frame_delta(self, newer, older):
+        """One 18-D delta frame between two (p, R, v, w, own) snapshots of a drone's own sensed stream.
+        Rotation delta = so3_log(R_older^T R_newer) (3), everything else plain subtraction."""
+        pN, RN, vN, wN, oN = newer
+        pO, RO, vO, wO, oO = older
+        return np.concatenate([pN - pO, self._so3_log(RO.T @ RN), vN - vO, wN - wO, oN - oO])
+
     def _build_obs(self, obs42):
         """Per-agent residual-policy observation: sensed load(18) + own drone(6) + base force slices
-        f_g(3)+f_lam(3) + clock phase (30 + clock; deployable, zero inter-drone info)."""
+        f_g(3)+f_lam(3) + clock phase (44) + 2 delta-history frames (36) = 80. History computed here
+        (per-drone) so the memoryless MLP gets a well-conditioned temporal signal (POMDP); rolled below."""
         out = {}
+        cur = []
+        z18 = np.zeros(18)
         for i, name in enumerate(self.possible_agents):
             p, R, v, w = self._estimates[i]
             load18 = np.concatenate([p, R.flatten(order="C"), v, w])
@@ -392,8 +425,15 @@ class ResidualMARLEnv(ParallelEnv):
             if self.own_noise > 0:
                 own = own + self.np_random.normal(0, self.own_noise, own.shape)
             clk = clock_features(self.t + self.clock_offset[i])   # loiter PHASE (per-drone clock)
-            # + base force decomposition slices (one-step lag) + clock phase.
-            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk]).astype(np.float32)
+            frame = (p.copy(), R.copy(), v.copy(), w.copy(), own.copy())   # this drone's current snapshot
+            cur.append(frame)
+            d1 = self._frame_delta(frame, self._hist1[i]) if self._hist1 is not None else z18
+            d2 = (self._frame_delta(self._hist1[i], self._hist2[i])
+                  if (self._hist1 is not None and self._hist2 is not None) else z18)
+            # + base force decomposition slices (one-step lag) + clock phase + 2 delta frames.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk, d1, d2]).astype(np.float32)
+        self._hist2 = self._hist1        # roll the 2-deep per-drone snapshot history
+        self._hist1 = cur
         return out
 
     # ---- PettingZoo API ----
@@ -425,6 +465,8 @@ class ResidualMARLEnv(ParallelEnv):
         self._net_fint = np.zeros(3)               # sum of internal forces (coordination); set each step
         self._v_prev1 = None                       # drone velocities t-1, t-2 (for jerk = 2nd difference)
         self._v_prev2 = None
+        self._hist1 = None                         # per-drone (p,R,v,w,own) snapshots t-1, t-2 -> delta obs
+        self._hist2 = None
         self.agents = list(self.possible_agents)
 
         self._update_estimates(obs42)

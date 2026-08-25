@@ -79,7 +79,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo.pt"   # OLD-NET best (the -0.166 DET_R policy) — regime-2 warm-start.
+WARMSTART = "residual_mappo_gt2_wide.pt"   # OLD-NET best (the -0.166 DET_R policy) — regime-2 warm-start.
                                          #   Arch/obs reverted to match it. CHANGE if you meant a different old ckpt.
 
 
