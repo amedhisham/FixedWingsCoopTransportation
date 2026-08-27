@@ -150,17 +150,27 @@ class ResidualMARLEnv(ParallelEnv):
                            #   swing term below (a louder reward into a capped actuator does nothing).
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).
         blowup_penalty=100.0,   # one-shot penalty on a blowup-truncated step (raw, pre REWARD_SCALE).
-        overspeed_w=0.2,  # SPEED CEILING (dense blowup guardrail). Mirror of the stall FLOOR on the high side:
+        overspeed_w=1.0,  # SPEED CEILING (dense blowup guardrail). Mirror of the stall FLOOR on the high side:
                            #   penalize ||v|| > overspeed_v. The blowup (tension collapse -> v explodes 19->37->
                            #   guard@100) had ONLY the SPARSE terminal -blowup_penalty -> no gradient on the
                            #   APPROACH, so the MEAN policy never learned MARGIN (blows up even in det eval).
                            #   This gives DENSE gradient on the ramp -> teaches the policy to back off. Zero in
                            #   normal ops (cruise ~1.4, aggressive maneuvers <~4 << overspeed_v) -> can't disturb
                            #   tracking. NOTE: fixes SAFETY (divergence), NOT tracking quality.
-        overspeed_v=4.0,   # ceiling threshold: above normal maneuvering (<~4), below the collapse spikes (19-37).
-        overspeed_cap=30.0,  # cap on the per-step (v-v_ceil)^2 (like jerk_cap): keeps dense gradient in the
-                             #   RECOVERABLE band (v~8-13.5 at w=10) w/o a giant advantage-variance spike once
-                             #   it's already diverging past saving (a bigger SPARSE spike just thrashes PPO).
+        overspeed_v=3.0,   # ceiling threshold. Lowered 4->3: blowup_mode probe shows the +y collapse is a pure
+                           #   formation SHEAR (COM ~still, load regulated ~0.3m, drones rip apart) with RECURRENT
+                           #   survivable shear/speed EXCURSIONS to v~4-15 for ~10s BEFORE the final ~0.2s cliff.
+                           #   Healthy quintics peak ~2.5-3, pathological excursions start ~4 -> line at 3 (thin
+                           #   3-4 band = gentle quadratic hinge, real bite at v>=4). v_mean~0 so per-drone speed
+                           #   ~= the shear -> this term IS the shear penalty (load-invisible mode, leak/coord blind).
+        overspeed_cap=75.0,  # cap on the per-step HINGE (over^2 + lin*over) (like jerk_cap): keeps dense gradient
+                             #   across the RECOVERABLE excursion band w/o a giant advantage-variance spike once
+                             #   it's diverging past saving (v->1e6; a bigger SPARSE spike just thrashes PPO). Max
+                             #   per-step penalty = overspeed_w*cap = 75 (v_flat ~= 11.2 with lin=1).
+        overspeed_lin=2.0,   # LINEAR hinge coefficient (mirror of stall_lin): penalty = w*(over^2 + lin*over).
+                             #   Pure quadratic starts at zero SLOPE at v_ceil (v=3.5 -> only 0.25) -> too soft
+                             #   right past the line. The linear term gives immediate BITE at the threshold
+                             #   (v=3.5 -> 0.75, 3x) so excursions hurt as soon as they cross 3, not only at v>=5.
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
         # CURRENT = REGIME 1 (rebuild the working curriculum on the multi-traj base): expert/manifold +
         # LIGHT stall (50, PLAIN relu(eps-v)^2) + load. Regime 2 -> stall_w 50->300. Regime 3 -> stall_w
@@ -241,6 +251,7 @@ class ResidualMARLEnv(ParallelEnv):
         self.blowup_v = blowup_v
         self.blowup_penalty = blowup_penalty
         self.overspeed_w, self.overspeed_v, self.overspeed_cap = overspeed_w, overspeed_v, overspeed_cap
+        self.overspeed_lin = overspeed_lin
         self.leak_w = leak_w
         self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
         self.swing_w = swing_w
@@ -645,7 +656,7 @@ class ResidualMARLEnv(ParallelEnv):
             stall = 0.0 if self._step <= self.stall_grace else d_stall ** 2 + self.stall_lin * d_stall
             jerk2 = min(float(jerk_vec[i] @ jerk_vec[i]), self.jerk_cap)   # per-drone jerk, CLIPPED (see jerk_cap)
             over = max(0.0, v_i - self.overspeed_v)                        # depth ABOVE the speed ceiling
-            over2 = min(over * over, self.overspeed_cap)                   # CLIPPED (see overspeed_cap)
+            over2 = min(over * over + self.overspeed_lin * over, self.overspeed_cap)  # quad + LINEAR hinge, CLIPPED
             rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall
                               + self.load_w * load_err2 + self.swing_w * swing2
                               + self.coord_w * coord2 + self.jerk_w * jerk2

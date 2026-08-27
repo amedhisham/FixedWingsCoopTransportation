@@ -27,7 +27,7 @@ RAMP = 50.0                          # quintic move duration (s)
 END_TIME = HOLD + RAMP + 1.0        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
 DESYNC_ON = False                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (1.0, 0.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+MOVE_DIR = (0.0, -1.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
 DELAYS = EVAL_DELAYS if DESYNC_ON else [0, 0, 0, 0]
 BLOWUP_V = 1.0e6     # scale_test-ONLY divergence guard (env default 100). Raised so the EXPLOSION gets
