@@ -132,7 +132,13 @@ def training_pairs(lib_path=LIB_OUT):
     to sample a (reference, expert) pair per episode. traj=None means the default trajectory.
     REGENERATE the lib (python expert_reference.py lib) whenever that set / N_TRAJ changes."""
     train = load_library(lib_path)["train"]
-    anchors = [None] + [tr for tr, _ in custom_set()]        # NON-quintic: default line + solver-engaging customs
+    # DROP the default +x line anchor (lib train[0]). It was a GUARANTEED anchor most iters and, being a
+    # pure +x move, is the persistent x-bias that specialized the residual to +x (jagged off-x / +y blows up;
+    # see f2-axis-generalization). Removing it de-tilts the training distribution toward isotropy. The library
+    # is still built WITH the default at index 0, so we slice it off here to keep traj<->lib index alignment.
+    # (Eval still scores the line via eval_scenarios -> we monitor +x for regression, we just don't TRAIN on it.)
+    train = train[1:]
+    anchors = [tr for tr, _ in custom_set()]                 # NON-quintic anchors now = solver-engaging customs only
     trajs = anchors + [tr for tr, _ in train_set(N_TRAJ)]
     assert len(trajs) == len(train), (
         f"traj/lib misalignment: {len(trajs)} trajs vs {len(train)} refs — rebuild expert_lib.npz")

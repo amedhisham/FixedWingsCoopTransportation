@@ -42,8 +42,9 @@ DOMAIN_RANDOMIZE = True
 # library (expert_lib.npz via training_pairs). True = generalize over the SAME 56-traj set F1 collected
 # on; False = the single default trajectory (prior behavior). Needs `python expert_reference.py lib` first.
 TRAJ_RANDOMIZE = True
-GUARANTEE_ANCHOR = 2     # like F1's collect: force >= this many NON-quintic episodes/iter (default line +
-                         #   solver-engaging customs). Bump to 2 for two. The rest are sampled from all 56.
+GUARANTEE_ANCHOR = 4     # force >= this many NON-quintic episodes/iter from the solver-engaging customs
+                         #   (the pure-+x DEFAULT LINE is now dropped from the anchors — see training_pairs —
+                         #   to de-tilt the distribution off +x). The rest are sampled from all quintics.
 FIXED_DELAYS = [1, 2, 2, 1]
 FIXED_SEED = 12345
 # Held-out deterministic eval scenario: a DIFFERENT seed than FIXED_SEED so DET_loop/DET_load
@@ -54,10 +55,10 @@ EVAL_DELAYS = [1, 2, 2, 1]
 # --- PPO hyperparameters ---
 ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 35000       # ~10 episodes / update. Domain randomization adds per-SCENARIO draw variance
+STEPS_PER_ITER = 70000       # ~10 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 10
+EPOCHS = 5
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
 GAMMA = 0.99
 LAMBDA = 0.95
@@ -71,16 +72,46 @@ ENT_COEF = 0.0               # REGIME 1: back to 0 (the original GitHub value). 
                              #   exploration (LOG_STD_INIT=-1.0) suffice. (regime-4 sweep: 0.0015 floor,
                              #   0.003 crept up, 0.01 runaway -> all moot without jerk.)
 MAX_GRAD = 1.0
-LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
-HIDDEN = (128, 128)          # actor+critic width — OLD-NET arch (networks.py default), matches r4base.
-                             #   Reverted from the (256,128,64) desired-state + leak experiment.
+LOG_STD_INIT = -1.6          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
+HIDDEN = (256, 256)          # actor+critic width — WIDENED 128->256 (function-preserving via widen_hidden.py)
+                             #   to give capacity for a direction-dependent residual law vs the jagged
+                             #   x-specialized 128-fit (f2-axis-generalization). Must match WARMSTART's hidden.
 EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-action) policy on the 2-traj set
                              #   (line + held-out quintic) -> true loop_dist. Raised 2->4 so the 2-traj mean
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo_gt2_wide.pt"   # OLD-NET best (the -0.166 DET_R policy) — regime-2 warm-start.
+WARMSTART = "residual_mappo_gt2_wide256.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+# (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
+# Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
+# at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
+# (DET_R -0.307, load 0.105) -> which the new dlam-pin (CONSIST_LAM_W) overwrites: watching load recover FROM
+# this decayed state is the sharpest test that dlam activity was the harmful counter-leak. (gt2_wide = pristine
+# 98-dim fallback if the co-adapted trunk turns out to be a worse basin than a fresh dw descent.)
                                          #   Arch/obs reverted to match it. CHANGE if you meant a different old ckpt.
+
+# --- dw-CONSISTENCY auxiliary LOSS (coordination scaffold) ---
+# Supervised pull of the dw (range/wrench) head toward dw* = clip(w_clean - w_base, cap_w): each drone
+# regresses its noisy-view wrench toward the TRUE-state wrench (the SHARED coordinated target). Attacks the
+# w_d divergence at its SOURCE (kills the range->null leak F_null that scatters the drones), instead of the
+# dlam whack-a-mole that leaks back into the load. A LOSS not a reward: exact pathwise gradient 2(dw*-mean),
+# not the high-variance score-function estimate routed through the flat-advantage/adv-norm channel that failed.
+# It's a SCAFFOLD (breaks the coordination-discovery barrier RL can't cross); RL still owns the hedged control
+# on the irreducible (delay-limited) residual. Needs env track_clean_lambda=True (one extra clean fwd/step).
+# 0.0 -> OFF (no clean tracking, zero overhead). Start small so it GUIDES, doesn't dominate.
+CONSIST_W = 0.0
+# dlam-CONSISTENCY (the OTHER head). Probe: dlam* = lam_clean - lam_base is r~0.012 = a NO-OP -> this term
+# effectively PINS dlam toward ~0 = "stop fighting in the nullspace, trust the coordinated base lambda".
+# Motivation (2026-08-26): dw-consistency alone left the dlam head FREE -> it kept the whack-a-mole
+# counter-leak (load 0.09->0.105) and the flat-advantage decay (DET_R -0.216->-0.307 over 144 iter while
+# consist floored at ~0.11 = the delay-limited estimable slice). Pinning dlam isolates whether the residual's
+# value is coordination (dw) or nullspace control (dlam). 0.0 -> OFF (leave dlam to RL).
+CONSIST_LAM_W = 0.0   # 10x dw's pin: run-4-28 showed consistL STUCK at 0.28 (dlam RMS~0.53) refusing to shrink
+# toward its ~0 target -> NOT estimability (target is ~0, trivial to fit) but a TUG-OF-WAR: the REWARD actively
+# pays for dlam (the nullspace counter-leak) while the LOOP degrades (0.336->0.434, blowups 1->5) = reward
+# gradient MISALIGNED with loop (coord metric blind to F_null -> reward can't see the leak it's paying for).
+# At 0.1 the pin lost to the reward; crank to 1.0 to WIN and force dlam->0, then read loop: recovers => dlam
+# was reward-paid harm (pin-to-zero is the fix); still bad => dlam was compensating (different problem).
 
 
 def compute_gae(rew, val, done, gamma, lam):
@@ -202,6 +233,8 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
     sees the default line + solver-engaging customs (like F1's collect), the rest from all 56."""
     obs_b, act_b, logp_b = [], [], []      # per step, shape (N, .)
     state_b, val_b, rew_b, done_b = [], [], [], []
+    dwstar_b = []                          # per step (N,6): dw-consistency target = clip(w_clean-w_base, cap_w)
+    dlamstar_b = []                        # per step (N,N): dlam-consistency target = clip(lam_clean-lam_base, cap_lam)
     ep_rews, ep_loops = [], []
     n_blowups = 0                          # episodes the guard truncated (state diverged)
 
@@ -238,6 +271,32 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
 
             obs_b.append(obs_arr); act_b.append(action); logp_b.append(logp)
             state_b.append(state); val_b.append(value)
+            # dw-consistency TARGET (privileged, train-only): pull each drone's noisy wrench toward the
+            # TRUE-state shared wrench, clipped to the SAME cap the env applies (so we regress to the ACHIEVABLE
+            # correction). env._wd_clean/_wd_base set this step by the clean replica (track_clean_lambda=True).
+            if env._wd_clean is not None:
+                dwstar = np.zeros((env.n, 6), dtype=np.float32)
+                for i in range(env.n):
+                    d = env._wd_clean - env._wd_base[i]
+                    cap = env.cap_w * np.linalg.norm(env._wd_base[i])
+                    nrm = np.linalg.norm(d)
+                    dwstar[i] = d * (cap / nrm) if (cap > 0 and nrm > cap) else d
+            else:
+                dwstar = np.zeros((env.n, 6), dtype=np.float32)
+            dwstar_b.append(dwstar)
+            # dlam-consistency TARGET (privileged, train-only): pull each drone's noisy-view lambda toward the
+            # TRUE-state coordinated lambda, clipped to cap_lam. lam_clean-lam_base is ~0 (already coordinated),
+            # so this PINS dlam toward zero = stop the nullspace counter-leak. env._lam_clean/_lam_base set above.
+            if env._lam_clean is not None:
+                dlamstar = np.zeros((env.n, env.n), dtype=np.float32)
+                for i in range(env.n):
+                    d = env._lam_clean - env._lam_base[i]
+                    cap = env.cap_lam * np.linalg.norm(env._lam_base[i])
+                    nrm = np.linalg.norm(d)
+                    dlamstar[i] = d * (cap / nrm) if (cap > 0 and nrm > cap) else d
+            else:
+                dlamstar = np.zeros((env.n, env.n), dtype=np.float32)
+            dlamstar_b.append(dlamstar)
             r_vec = np.array([rewards[a] for a in agents], dtype=np.float32)   # PER-DRONE rewards
             rew_b.append(REWARD_SCALE * r_vec)                               # (N,) scaled for GAE/critic
             done = bool(list(trunc.values())[0] or list(term.values())[0])
@@ -255,6 +314,8 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
     return (np.array(obs_b), np.array(act_b), np.array(logp_b),
             np.array(state_b, dtype=np.float32), np.array(val_b, dtype=np.float32),
             np.array(rew_b, dtype=np.float32), np.array(done_b, dtype=np.float32),
+            np.array(dwstar_b, dtype=np.float32),
+            np.array(dlamstar_b, dtype=np.float32),
             np.mean(ep_rews), np.mean(ep_loops), n_blowups)
 
 
@@ -262,7 +323,8 @@ def main():
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
 
-    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW, end_time=T_END)   # 35 s: cover full trajs + hold
+    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW, end_time=T_END,   # 35 s: cover full trajs + hold
+                          track_clean_lambda=(CONSIST_W > 0 or CONSIST_LAM_W > 0))  # clean-view for consistency targets
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
     env.default_expert_pos = env.expert_pos.copy()   # DEFAULT-traj expert ref (eval/estimate baseline)
@@ -311,7 +373,7 @@ def main():
     try:
       for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
-        (obs_b, act_b, logp_b, state_b, val_b, rew_b, done_b,
+        (obs_b, act_b, logp_b, state_b, val_b, rew_b, done_b, dwstar_b, dlamstar_b,
          mean_ep_r, mean_loop, n_blowups) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_,
                                                      pairs, n_anchor)
 
@@ -321,11 +383,18 @@ def main():
             advs[:, d], rets[:, d] = compute_gae(rew_b[:, d], val_b, done_b, GAMMA, LAMBDA)
         adv = (advs - advs.mean()) / (advs.std() + 1e-8)     # (T,N)
         ret_mean = rets.mean(axis=1)                         # (T,) critic target = mean per-drone return
+        val_arr = np.asarray(val_b, dtype=np.float32)        # critic values at COLLECTION (pre-update baseline)
+        ev = 1.0 - np.var(ret_mean - val_arr) / (np.var(ret_mean) + 1e-8)   # explained variance: >~0.7 critic
+        #   baselines the return swing (advantage is clean); ~0 or <0 -> the swing leaks into the advantage (noise)
 
         tt = lambda a: torch.tensor(a, device=DEVICE)
         obs_t = tt(obs_b); act_t = tt(act_b); logp_old = tt(logp_b)           # (T,N,.)
         state_t = tt(state_b); adv_t = tt(adv); ret_t = tt(ret_mean)
+        dwstar_t = tt(dwstar_b)                                               # (T,N,6) dw consistency target
+        dlamstar_t = tt(dlamstar_b)                                           # (T,N,N) dlam consistency target
 
+        consist_log = 0.0
+        consist_lam_log = 0.0
         for _ in range(EPOCHS):
             idx = rng.permutation(T)
             for s in range(0, T, MINIBATCH_STEPS):
@@ -342,6 +411,18 @@ def main():
                                     torch.clamp(ratio, 1 - CLIP, 1 + CLIP) * A).mean()
                 ent = dist.entropy().sum(-1).mean()
                 loss_a = l_clip - ENT_COEF * ent
+                if CONSIST_W > 0:                                             # dw-consistency SCAFFOLD (LOSS)
+                    dw_pred = dist.mean[:, N:N + 6]                           # actor MEAN, dw (range) head slice
+                    dw_tgt = dwstar_t[mb].reshape(-1, 6)                      # target (already cap-clipped)
+                    consist = ((dw_pred - dw_tgt) ** 2).mean()
+                    loss_a = loss_a + CONSIST_W * consist
+                    consist_log = float(consist.detach())
+                if CONSIST_LAM_W > 0:                                         # dlam-consistency (pin dlam -> ~0)
+                    dlam_pred = dist.mean[:, :N]                              # actor MEAN, dlam (nullspace) head slice
+                    dlam_tgt = dlamstar_t[mb].reshape(-1, N)                  # target (already cap-clipped, ~0)
+                    consist_lam = ((dlam_pred - dlam_tgt) ** 2).mean()
+                    loss_a = loss_a + CONSIST_LAM_W * consist_lam
+                    consist_lam_log = float(consist_lam.detach())
                 opt_a.zero_grad(); loss_a.backward()
                 nn.utils.clip_grad_norm_(actor.parameters(), MAX_GRAD); opt_a.step()
 
@@ -357,9 +438,11 @@ def main():
             e = eval_policy(env, actor, om, os_, eval_scen)
             hist_det_it.append(it); hist_det.append(e["loop"])
             spread = " ".join(f"{lbl[:4]} {v:.3f}" for lbl, v in e["per_traj_loop"].items())
+            gap = mean_loop - e["loop"]                       # sampled - DET: <0 => noise HELPS the mean
+            #   (deployed mean rotting behind the sampling distribution); widening-negative = the mean is decaying
             det_str = (f"  DET_R {e['reward']:.3f}  loop {e['loop']:.3f} [{spread}]  load {e['load']:.3f}"
                        f"  vmin {e['vmin']:.3f}  stall% {100 * e['stallfrac']:.1f}"
-                       f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  jerk {e['jerk']:.3f}"
+                       f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  jerk {e['jerk']:.3f}  gap {gap:+.3f}"
                        + (f"  DET_BLOWUPS {e['blowups']}" if e["blowups"] else ""))
             if e["reward"] > best_reward:   # select on DETERMINISTIC REWARD (encodes ALL objectives), not
                 best_reward = e["reward"]   # DET_loop (blind to stall/load). Scoped to THIS run (reset above).
@@ -367,7 +450,7 @@ def main():
                 det_str += f"  (new best {best_reward:.3f} -> saved)"
         blow_str = f"  blowups {n_blowups}" if n_blowups else ""
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
-              f"| critic_loss {loss_c.item():.3f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
+              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
 

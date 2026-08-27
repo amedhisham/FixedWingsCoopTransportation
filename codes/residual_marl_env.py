@@ -225,6 +225,9 @@ class ResidualMARLEnv(ParallelEnv):
         # --- ablation: zero the delta_wrench (range/load-trim) head -> delta_lambda-only policy.
         #     Tests whether the load head earns its keep or is just a load-disturbing stall crutch. ---
         disable_dw=False,
+        # diagnostic/consistency: also run the base net on the TRUE shared state -> lambda_clean
+        #   (the coordinated target). Off by default (extra forward/step); the zero_probe / aux-loss set it.
+        track_clean_lambda=False,
         # --- this episode's load-pose reference (callable t->(p,v,R,omega); None -> default trajectory).
         #     Set per-episode (env.traj = ...) for the trajectory library; kept on the INSTANCE (not a
         #     module global) so it's safe under multiprocessing / vectorized envs. ---
@@ -257,6 +260,7 @@ class ResidualMARLEnv(ParallelEnv):
         self.ctrl_delay = self._broadcast(ctrl_delay).astype(int)
         self.clock_offset = self._broadcast(clock_offset).astype(float)
         self.disable_dw = disable_dw
+        self._track_clean = track_clean_lambda
         self.traj = traj                                  # per-episode reference (None -> default)
 
         self.possible_agents = [f"drone_{i}" for i in range(self.n)]
@@ -288,6 +292,16 @@ class ResidualMARLEnv(ParallelEnv):
                             self.mass, self.J, self.Bb, self.recon_alpha)
             for _ in range(self.n)
         ]
+        # CLEAN replica: one extra LocalModelAgent fed the TRUE shared state each step -> lambda_clean,
+        # the coordinated target all drones WOULD agree on if they saw the truth (consistency target).
+        self._clean = (LocalModelAgent(self.n, self.dt, self.phases, self.epsilon, self.L0,
+                                       self.mass, self.J, self.Bb, self.recon_alpha)
+                       if self._track_clean else None)
+        # PROBE-only (no training use): if set to "dlam"/"dw"/"both", OVERRIDE the residual action
+        # with the ORACLE clean-view correction (lam_clean-lam_base / w_clean-w_base) computed this step,
+        # so we can measure what perfect-perception-fed-to-the-frozen-base actually achieves in closed loop.
+        # None -> normal (actor drives). Requires track_clean_lambda=True.
+        self._oracle_mode = None
 
         # Actuator filter for the ACTUAL plant force.
         self.llc_alpha = step_size / (0.2 + step_size)
@@ -305,8 +319,17 @@ class ResidualMARLEnv(ParallelEnv):
         # action = [delta_lambda(n), delta_wrench(6)].  clock features = loiter PHASE (zero-comms).
         self._clock_dim = clock_features(0.0).shape[0]
         self._hist_dim = 2 * 18                                # 2 delta frames of the 24-subset (R->3 via log)
+        # + SHARED REFERENCE ANCHOR: desired load state [p_d, R_d(9), v_d, omega_d] = 18, same layout as
+        #   load18. IDENTICAL across drones (all evaluate get_reference_trajectory at the same mission t;
+        #   clock_offset=0 in DESYNC) -> a genuinely shared signal to anchor coordination, unlike the private
+        #   noisy load view. ADDED to (not substituted for) the estimate: the policy blends anchor + feedback
+        #   (pure-reference goes open-loop, refbase probe). NOTE: these dims are LARGE/varying (p_d to ~11m,
+        #   constant on the line) -> they need REAL mean/std (widen_checkpoint computes them), NOT the mean0/std1
+        #   the history dims use, or normalization blows up (the old desired-state norm bug).
+        self._ref_dim = 18
         self._obs_space = spaces.Box(-np.inf, np.inf,
-                                     shape=(30 + self._clock_dim + self._hist_dim,), dtype=np.float32)
+                                     shape=(30 + self._clock_dim + self._hist_dim + self._ref_dim,),
+                                     dtype=np.float32)
         self._act_space = spaces.Box(-1.0, 1.0, shape=(self.n + 6,), dtype=np.float32)
 
         self.np_random = np.random.default_rng()
@@ -430,8 +453,14 @@ class ResidualMARLEnv(ParallelEnv):
             d1 = self._frame_delta(frame, self._hist1[i]) if self._hist1 is not None else z18
             d2 = (self._frame_delta(self._hist1[i], self._hist2[i])
                   if (self._hist1 is not None and self._hist2 is not None) else z18)
-            # + base force decomposition slices (one-step lag) + clock phase + 2 delta frames.
-            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk, d1, d2]).astype(np.float32)
+            # SHARED REFERENCE ANCHOR: desired load state at this drone's mission clock, laid out like load18
+            # ([p_d, R_d(9), v_d, omega_d]). get_reference_trajectory returns (p, v, R, omega).
+            pd, vd, Rd, wd = get_reference_trajectory(self.t + self.clock_offset[i], self.traj)
+            ref18 = np.concatenate([np.asarray(pd), np.asarray(Rd).flatten(order="C"),
+                                    np.asarray(vd), np.asarray(wd)])
+            # + base force decomposition slices (one-step lag) + clock phase + 2 delta frames + reference.
+            out[name] = np.concatenate([load18, own, self._fg[i], self._flam[i], clk,
+                                        d1, d2, ref18]).astype(np.float32)
         self._hist2 = self._hist1        # roll the 2-deep per-drone snapshot history
         self._hist1 = cur
         return out
@@ -467,6 +496,12 @@ class ResidualMARLEnv(ParallelEnv):
         self._v_prev2 = None
         self._hist1 = None                         # per-drone (p,R,v,w,own) snapshots t-1, t-2 -> delta obs
         self._hist2 = None
+        if self._clean is not None:
+            self._clean.reset()
+        self._lam_base = None                      # (n,n) per-drone noisy lambda vectors (last step)
+        self._lam_clean = None                     # (n,) clean-view shared lambda (last step)
+        self._wd_base = None                       # (n,6) per-drone noisy wrench (set only if track_clean)
+        self._wd_clean = None                      # (6,) clean-view shared wrench (set only if track_clean)
         self.agents = list(self.possible_agents)
 
         self._update_estimates(obs42)
@@ -489,6 +524,20 @@ class ResidualMARLEnv(ParallelEnv):
         with torch.no_grad():
             lams = self.net(torch.tensor(Xn)).numpy()      # (n, n): row i = drone i's whole lambda vector
 
+        # CLEAN-VIEW lambda (privileged, train-only): the SAME base net on the TRUE shared state
+        # (newest un-delayed/un-noised state) -> the coordinated target all drones would agree on.
+        if self._clean is not None:
+            p0, R0, v0, w0 = self._state_buffer[-1]
+            crow = self._clean.prepare(p0, v0, R0, w0, self.t, self.traj)
+            Xc = ((crow[None] - self.obs_mean) / self.obs_std).astype(np.float32)
+            with torch.no_grad():
+                lam_clean = self.net(torch.tensor(Xc)).numpy()[0]
+            self._clean.finalize(lam_clean)                # roll the clean replica's own lambda history
+            self._lam_base = lams.copy()                   # (n,n)
+            self._lam_clean = lam_clean                    # (n,)
+            self._wd_base = np.stack([lm._w_d for lm in self.locals])   # (n,6) per-drone noisy wrench
+            self._wd_clean = self._clean._w_d.copy()       # (6,) clean shared wrench
+
         f_base = np.zeros(3 * self.n)
         lam_own = np.zeros(self.n)
         for i, lm in enumerate(self.locals):
@@ -509,6 +558,12 @@ class ResidualMARLEnv(ParallelEnv):
         f_int = np.zeros(3 * self.n)         # FULL assembled applied internal-force vector -> leak WRENCH (G@f_int)
         for i, name in enumerate(self.possible_agents):
             a = np.asarray(actions[name], dtype=float)
+            if self._oracle_mode is not None and self._lam_clean is not None:   # PROBE: override w/ oracle correction
+                a = np.zeros(self.n + 6)
+                if self._oracle_mode in ("dlam", "both"):
+                    a[:self.n] = self._lam_clean - self._lam_base[i]       # cap-clipped below by _clip_norm (same path)
+                if self._oracle_mode in ("dw", "both"):
+                    a[self.n:self.n + 6] = self._wd_clean - self._wd_base[i]
             cap_lam_i = self.cap_lam * np.linalg.norm(lams[i])         # this drone's dlam cap NORM
             cap_w_i   = self.cap_w   * np.linalg.norm(self.locals[i]._w_d)
             # SATURATION = raw head norm / cap. >=1 -> the residual is CLIPPED (wants more authority than the
@@ -555,7 +610,7 @@ class ResidualMARLEnv(ParallelEnv):
             trunc = {a: True for a in self.possible_agents}
             info = {a: {"lambda": 0.0, "prdot_own": 0.0, "loop_dist": 5.0,
                         "load_err": 5.0, "load_verr": 5.0, "min_speed": 0.0, "coord": 5.0, "jerk": 5.0,
-                        "blowup": True}
+                        "blowup": True, "blowup_state": obs42}   # diverged 42-D state (for probes/plots; ignored in training)
                     for a in self.possible_agents}
             return zeros, pen, term, trunc, info
 
