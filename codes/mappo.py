@@ -81,7 +81,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo_gt2_wide256.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
