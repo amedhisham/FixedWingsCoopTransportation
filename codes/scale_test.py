@@ -20,14 +20,14 @@ from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo_gt2_wide.pt"          # change to the policy you want to test
+CKPT = "residual_mappo_wideh_ch2.pt"          # change to the policy you want to test
 SCALES = [7.0]      # +x displacement (m)
 PLOT_SCALES = [7.0]                 # which scale(s) to draw the usual per-run plots for
 RAMP = 50.0                          # quintic move duration (s)
 END_TIME = HOLD + RAMP + 1.0        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
-DESYNC_ON = False                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (0.0, -1.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
+MOVE_DIR = (1.0, 1.0, 1.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
 DELAYS = EVAL_DELAYS if DESYNC_ON else [0, 0, 0, 0]
 BLOWUP_V = 1.0e6     # scale_test-ONLY divergence guard (env default 100). Raised so the EXPLOSION gets
@@ -39,8 +39,10 @@ def load_actor(env):
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
     om = ck["obs_mean"].astype(np.float32).reshape(-1); os_ = ck["obs_std"].astype(np.float32).reshape(-1)
     obs_dim = om.shape[0]; act_dim = env._act_space.shape[0]
-    actor = Actor(obs_dim, act_dim)
-    actor.load_state_dict(ck["state_dict"]); actor.eval()
+    sd = ck["state_dict"]
+    hidden = (sd["body.0.weight"].shape[0], sd["body.2.weight"].shape[0])   # INFER width (128 or 256...)
+    actor = Actor(obs_dim, act_dim, hidden=hidden)
+    actor.load_state_dict(sd); actor.eval()
     return actor, om, os_
 
 

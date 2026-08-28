@@ -22,7 +22,8 @@ import numpy as np
 from fmu_plant_env import FMUPlantEnv
 from classical_agent import ClassicalAgent
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from trajectories import train_set, custom_set, showcase_set
+from trajectories import train_set, custom_set, showcase_set, BASE_POS, HOLD
+from controller import make_quintic_pose
 from collect_prdot_data import N_TRAJ
 
 OUT = "expert_ref.npz"

@@ -171,6 +171,20 @@ class ResidualMARLEnv(ParallelEnv):
                              #   Pure quadratic starts at zero SLOPE at v_ceil (v=3.5 -> only 0.25) -> too soft
                              #   right past the line. The linear term gives immediate BITE at the threshold
                              #   (v=3.5 -> 0.75, 3x) so excursions hurt as soon as they cross 3, not only at v>=5.
+        # --- dlam OVERSHOOT hinge (UN-SATURATE the nullspace head) ---
+        overshoot_lam_w=1.0,   # penalize the RAW dlam action's overshoot BEYOND the cap: over_sat = max(0, sat_lam-1),
+                               #   pen = w*(over_sat^2 + lin*over_sat), capped. sat_lam = ||raw dlam|| / cap_lam.
+                               #   NOT a dlam-magnitude penalty (below cap = ZERO, full authority): it only bites the
+                               #   part already CLIPPED AWAY -> costs the policy nothing real, just removes the FREE
+                               #   ratchet that parks the mean deep in the flat clip region (sat~1.5 on -y). The clip
+                               #   makes the reward FLAT above cap -> no gradient to come back; this supplies it.
+                               #   Un-saturating REVIVES the channel: a saturated head is open-loop (always max lam,
+                               #   can't modulate down) -> can't damp a shear excursion; in-range it can. Normalized
+                               #   by sat (not force) -> comparable across trajs regardless of ||lam_base||. LOW
+                               #   variance (smooth fn of the action, not a stochastic trigger) -> critic baselines
+                               #   it, EV should hold. dlam-ONLY (sat_w~0.66, not saturated).
+        overshoot_lam_lin=1.0, # linear-hinge coeff (bite right at sat=1, not zero-slope): sat 1.2->0.24, 1.5->0.75.
+        overshoot_lam_cap=9.0, # cap the per-step hinge (over_sat up to 3 -> sat 4) -> bounds exploration spikes.
         # --- reward weights (manifold-tracking; see expert_reference.py) ---
         # CURRENT = REGIME 1 (rebuild the working curriculum on the multi-traj base): expert/manifold +
         # LIGHT stall (50, PLAIN relu(eps-v)^2) + load. Regime 2 -> stall_w 50->300. Regime 3 -> stall_w
@@ -252,6 +266,8 @@ class ResidualMARLEnv(ParallelEnv):
         self.blowup_penalty = blowup_penalty
         self.overspeed_w, self.overspeed_v, self.overspeed_cap = overspeed_w, overspeed_v, overspeed_cap
         self.overspeed_lin = overspeed_lin
+        self.overshoot_lam_w, self.overshoot_lam_lin, self.overshoot_lam_cap = (
+            overshoot_lam_w, overshoot_lam_lin, overshoot_lam_cap)
         self.leak_w = leak_w
         self.manifold_w, self.stall_w, self.load_w = manifold_w, stall_w, load_w
         self.swing_w = swing_w
@@ -657,10 +673,13 @@ class ResidualMARLEnv(ParallelEnv):
             jerk2 = min(float(jerk_vec[i] @ jerk_vec[i]), self.jerk_cap)   # per-drone jerk, CLIPPED (see jerk_cap)
             over = max(0.0, v_i - self.overspeed_v)                        # depth ABOVE the speed ceiling
             over2 = min(over * over + self.overspeed_lin * over, self.overspeed_cap)  # quad + LINEAR hinge, CLIPPED
+            over_sat = max(0.0, self._sat_lam[i] - 1.0)                    # raw dlam OVERSHOOT beyond the cap (clipped away)
+            oshoot = min(over_sat * over_sat + self.overshoot_lam_lin * over_sat, self.overshoot_lam_cap)
             rewards[name] = -(self.manifold_w * d2 + self.stall_w * stall
                               + self.load_w * load_err2 + self.swing_w * swing2
                               + self.coord_w * coord2 + self.jerk_w * jerk2
-                              + self.overspeed_w * over2 + self.leak_w * leak2)
+                              + self.overspeed_w * over2 + self.leak_w * leak2
+                              + self.overshoot_lam_w * oshoot)
             loop_d[name] = d2 ** 0.5
         self._v_prev2 = self._v_prev1        # roll velocity history for next step's jerk
         self._v_prev1 = v_cur

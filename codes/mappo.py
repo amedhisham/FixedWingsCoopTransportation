@@ -28,7 +28,8 @@ from collect_il_data import T_END          # 35 s — the horizon the trajectori
 
 # --- desync spec (training distribution; matches the plan) ---
 DESYNC = dict(pos_noise=0.03, vel_noise=0.10, noise_corr=0.995)
-DELAY_CHOICES = (0, 2)
+DELAY_CHOICES = (0, 2)   # the delay WALK range [0,2] (ceiling is now fixed at 2 for all drones — see
+                         #   FIXED_DELAYS/collect); still used only to CENTER the critic's delay feature.
 
 # ABLATION: True = delta_lambda-ONLY (zero the delta_wrench/load-trim head). Tests whether dw earns
 # its keep or is just a load-disturbing stall crutch (removing it should drop swing toward base ~0.10).
@@ -45,12 +46,16 @@ TRAJ_RANDOMIZE = True
 GUARANTEE_ANCHOR = 4     # force >= this many NON-quintic episodes/iter from the solver-engaging customs
                          #   (the pure-+x DEFAULT LINE is now dropped from the anchors — see training_pairs —
                          #   to de-tilt the distribution off +x). The rest are sampled from all quintics.
-FIXED_DELAYS = [1, 2, 2, 1]
+# Delay CEILING = 2 for ALL drones, EVERY episode, train AND eval (was a per-episode random {0,1,2}
+# ceiling in training + [1,2,2,1] in eval -> inconsistent, and some drones near-synchronous). Now the
+# actual per-step delay is a uniform 0-1-2 random walk on every drone; variety comes from the WALK
+# realization (fresh seed/episode in training), not from a varying ceiling.
+FIXED_DELAYS = [2, 2, 2, 2]
 FIXED_SEED = 12345
 # Held-out deterministic eval scenario: a DIFFERENT seed than FIXED_SEED so DET_loop/DET_load
 # score a case we did NOT overfit during the fixed-scenario pretrain.
 EVAL_SEED = 4242
-EVAL_DELAYS = [1, 2, 2, 1]
+EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
 ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
@@ -159,7 +164,8 @@ def eval_policy(env, actor, om, os_, scenarios):
     lucky stick (and the held-out quintic makes it a generalization signal too). Same held-out desync
     (EVAL_SEED/EVAL_DELAYS) per traj. Returns mean metrics + per-traj loop (spread). Uses the mean action."""
     floor = env.epsilon + env.stall_margin              # cruise floor (below = stall risk)
-    per = {k: [] for k in ("reward", "loop", "load", "loadmax", "swing", "vmin", "stallfrac", "coord", "jerk")}
+    per = {k: [] for k in ("reward", "loop", "load", "loadmax", "swing", "vmin", "stallfrac", "coord", "jerk",
+                           "satl", "satw")}
     per_traj_loop = {}
     n_blow = 0                                          # deterministic (mean-policy) blowups -> a DEPLOYMENT hole
     for label, traj, epos in scenarios:
@@ -168,6 +174,7 @@ def eval_policy(env, actor, om, os_, scenarios):
         obs, _ = env.reset(seed=EVAL_SEED)
         agents = env.possible_agents
         loops, loads, swings, rews, speeds, coords, jerks = [], [], [], [], [], [], []
+        satls, satws = [], []                               # DET cap-saturation (>=1 clipped) — watch dlam un-saturate
         k, blew = 0, False
         while env.agents:
             oa = np.stack([obs[a] for a in agents]).astype(np.float32)
@@ -181,6 +188,8 @@ def eval_policy(env, actor, om, os_, scenarios):
             loads.append(infos[agents[0]]["load_err"])           # global (same in every agent's info)
             swings.append(infos[agents[0]]["load_verr"])
             coords.append(infos[agents[0]]["coord"])
+            satls.append(np.mean([infos[a]["sat_lam"] for a in agents]))
+            satws.append(np.mean([infos[a]["sat_w"] for a in agents]))
             k += 1
             if k > env.stall_grace:                              # skip startup spin-up (not a stall)
                 speeds.append(infos[agents[0]]["min_speed"])
@@ -200,12 +209,15 @@ def eval_policy(env, actor, om, os_, scenarios):
         per["swing"].append(float(np.mean(swings)));  per["vmin"].append(vmin)
         per["stallfrac"].append(float((speeds < floor).mean()) if speeds.size else 1.0)
         per["coord"].append(float(np.mean(coords)));  per["jerk"].append(float(np.mean(jerks)))
+        per["satl"].append(float(np.mean(satls)) if satls else 0.0)
+        per["satw"].append(float(np.mean(satws)) if satws else 0.0)
     # aggregate across the eval set: MEAN for the selection/tracking metrics; worst-case for the guards.
     out = dict(reward=float(np.mean(per["reward"])), loop=float(np.mean(per["loop"])),
                load=float(np.mean(per["load"])), loadmax=float(np.max(per["loadmax"])),
                swing=float(np.mean(per["swing"])), vmin=float(np.min(per["vmin"])),
                stallfrac=float(np.max(per["stallfrac"])), coord=float(np.mean(per["coord"])),
-               jerk=float(np.mean(per["jerk"])), per_traj_loop=per_traj_loop, blowups=n_blow)
+               jerk=float(np.mean(per["jerk"])), satl=float(np.mean(per["satl"])),
+               satw=float(np.mean(per["satw"])), per_traj_loop=per_traj_loop, blowups=n_blow)
     return out
 
 
@@ -248,9 +260,9 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
             env.traj, env.expert_pos = pairs[int(rng.integers(hi))]
         else:
             env.traj, env.expert_pos = None, env.default_expert_pos
-        # per-episode DESYNC (delays + noise realization).
+        # per-episode DESYNC (fresh noise + delay-walk realization; delay CEILING fixed at 2 for all drones).
         if DOMAIN_RANDOMIZE:
-            env.ctrl_delay = rng.integers(DELAY_CHOICES[0], DELAY_CHOICES[1] + 1, size=env.n)
+            env.ctrl_delay = np.full(env.n, 2, dtype=int)   # ceiling 2 all drones -> uniform 0-1-2 walk
             obs, _ = env.reset(seed=int(rng.integers(1 << 30)))
         else:
             env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)     # fixed desync -> deterministic env
@@ -367,7 +379,7 @@ def main():
         torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
                     "critic_state": {k: v.cpu() for k, v in critic.state_dict().items()},
                     "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,
-                    "best_reward": best}, path)
+                    "hidden": list(HIDDEN), "best_reward": best}, path)   # self-describing width (loaders infer anyway)
 
     it = 0
     try:
@@ -442,7 +454,7 @@ def main():
             #   (deployed mean rotting behind the sampling distribution); widening-negative = the mean is decaying
             det_str = (f"  DET_R {e['reward']:.3f}  loop {e['loop']:.3f} [{spread}]  load {e['load']:.3f}"
                        f"  vmin {e['vmin']:.3f}  stall% {100 * e['stallfrac']:.1f}"
-                       f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  jerk {e['jerk']:.3f}  gap {gap:+.3f}"
+                       f"  swing {e['swing']:.3f}  coord {e['coord']:.3f}  satL {e['satl']:.2f}  satW {e['satw']:.2f}  gap {gap:+.3f}"
                        + (f"  DET_BLOWUPS {e['blowups']}" if e["blowups"] else ""))
             if e["reward"] > best_reward:   # select on DETERMINISTIC REWARD (encodes ALL objectives), not
                 best_reward = e["reward"]   # DET_loop (blind to stall/load). Scoped to THIS run (reset above).
