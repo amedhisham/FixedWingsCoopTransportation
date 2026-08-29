@@ -189,6 +189,7 @@ def eval_policy(env, actor, om, os_, scenarios):
             obs, rewards, _, _, infos = env.step({a: mean[i] for i, a in enumerate(agents)})
             if infos[agents[0]].get("blowup"):           # guard fired -> the MEAN policy diverged this traj
                 blew = True
+                break                                    # blowup info omits sat_lam/sat_w etc; traj is DISQUALIFIED below
             rews.append(np.mean([rewards[a] for a in agents]))   # per-step mean reward (the SELECTION metric)
             loops.append(np.mean([infos[a]["loop_dist"] for a in agents]))
             loads.append(infos[agents[0]]["load_err"])           # global (same in every agent's info)
@@ -211,10 +212,12 @@ def eval_policy(env, actor, om, os_, scenarios):
         else:
             per["reward"].append(float(np.mean(rews)));   per["loop"].append(float(np.mean(loops)))
             per_traj_loop[label] = float(np.mean(loops))
-        per["load"].append(float(np.mean(loads)));    per["loadmax"].append(float(np.max(loads)))
-        per["swing"].append(float(np.mean(swings)));  per["vmin"].append(vmin)
+        per["load"].append(float(np.mean(loads)) if loads else 5.0)          # empty if it blew instantly
+        per["loadmax"].append(float(np.max(loads)) if loads else 5.0)
+        per["swing"].append(float(np.mean(swings)) if swings else 0.0);  per["vmin"].append(vmin)
         per["stallfrac"].append(float((speeds < floor).mean()) if speeds.size else 1.0)
-        per["coord"].append(float(np.mean(coords)));  per["jerk"].append(float(np.mean(jerks)))
+        per["coord"].append(float(np.mean(coords)) if coords else 0.0)
+        per["jerk"].append(float(np.mean(jerks)) if jerks else 0.0)
         per["satl"].append(float(np.mean(satls)) if satls else 0.0)
         per["satw"].append(float(np.mean(satws)) if satws else 0.0)
     # aggregate across the eval set: MEAN for the selection/tracking metrics; worst-case for the guards.
