@@ -15,19 +15,22 @@ import matplotlib.pyplot as plt
 from residual_marl_env import ResidualMARLEnv
 from networks import Actor
 from controller import make_quintic_pose
-from expert_reference import expert_path
+from expert_reference import expert_path, training_pairs   # expert_path: MOVE_DIR quintics; training_pairs: custom lib
 from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
 CKPT = "residual_mappo.pt"          # change to the policy you want to test
-SCALES = [7.0]      # +x displacement (m)
+SCALES = [1.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
-RAMP = 25.0                          # quintic move duration (s)
+RAMP = 12.0                          # quintic move duration (s)
 END_TIME = HOLD + RAMP + 1.0        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
 DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (1.0, -1.0, 0.3)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+MOVE_DIR = (0.0, 1.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+USE_CUSTOM = False                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
+CUSTOM_IDX = 2                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
+                                     #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
 DELAYS = EVAL_DELAYS if DESYNC_ON else [0, 0, 0, 0]
 BLOWUP_V = 1.0e6     # scale_test-ONLY divergence guard (env default 100). Raised so the EXPLOSION gets
@@ -94,16 +97,18 @@ def roll(env, actor, om, os_, traj, dpos, use_policy, record=False):
     return m + (blew, blow_loadoff, blow_vmax, blow_t), hist
 
 
-def plot_run(hist, traj, eps, scale, mode=""):
+def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
+    if end_time is None:
+        end_time = END_TIME
     t = np.array(hist["t"])
     load = np.array(hist["load"])                       # (T,3)
     dpos = np.array(hist["dpos"])                       # (T,n,3)
     dvel = np.array(hist["dvel"])                       # (T,n)
-    t_full = np.linspace(0.0, END_TIME, 500)           # FULL intended horizon (actual may die early)
-    ref_full = np.array([traj(ti)[0] for ti in t_full])   # (·,3) intended load path to END_TIME
-    died = t[-1] < END_TIME - 1.0                       # actual ended before the move finished -> blew up
+    t_full = np.linspace(0.0, end_time, 500)           # FULL intended horizon (actual may die early)
+    ref_full = np.array([traj(ti)[0] for ti in t_full])   # (·,3) intended load path to end_time
+    died = t[-1] < end_time - 1.0                       # actual ended before the move finished -> blew up
     n = dpos.shape[1]
-    tag = f"{scale:.0f} m {tuple(MOVE_DIR)} — {mode}" + (f"  (DIED @ {t[-1]:.0f}s)" if died else "")
+    tag = f"{tag_label} — {mode}" + (f"  (DIED @ {t[-1]:.0f}s)" if died else "")
 
     # 1. Load position tracking (xyz) — reference over FULL horizon vs actual (stops where it died)
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
@@ -113,7 +118,7 @@ def plot_run(hist, traj, eps, scale, mode=""):
         if died:
             ax.axvline(t[-1], color="r", ls=":", lw=1.5, label="blew up")
         ax.set_ylabel(f"{lbl} (m)"); ax.grid(True); ax.legend(loc="upper right")
-        ax.set_xlim(0, END_TIME)
+        ax.set_xlim(0, end_time)
     axes[-1].set_xlabel("Time (s)")
     fig.suptitle(f"Load position — {tag}")
 
@@ -124,7 +129,7 @@ def plot_run(hist, traj, eps, scale, mode=""):
     plt.axhline(eps, ls="--", c="gray", label="epsilon")
     if died:
         plt.axvline(t[-1], color="r", ls=":", lw=1.5, label="blew up")
-    plt.xlim(0, END_TIME)
+    plt.xlim(0, end_time)
     plt.xlabel("Time (s)"); plt.ylabel("Velocity norm (m/s)")
     plt.title(f"Drone velocity norms — {tag}"); plt.legend(); plt.grid(True)
 
@@ -138,32 +143,49 @@ def plot_run(hist, traj, eps, scale, mode=""):
     ax3.set_title(f"Drone + load trajectories — {tag}"); ax3.legend()
 
 
+def fmt(m):
+    if not m[4]:
+        return f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>9.2f}{m[3]:>8.2f}"
+    if m[5] is None:
+        return "   -- BLEW UP (NaN) --"
+    return f"   BLEW @ {m[7]:.1f}s  load {m[5]:.2f}m off  vmax {m[6]:.0f} m/s"
+
+
 def main():
-    env = ResidualMARLEnv(**DESYNC_CFG, end_time=END_TIME, blowup_v=BLOWUP_V)
+    horizon = T_END if USE_CUSTOM else END_TIME       # customs span [hold, hold+move_dur] at T_END
+    env = ResidualMARLEnv(**DESYNC_CFG, end_time=horizon, blowup_v=BLOWUP_V)
     actor, om, os_ = load_actor(env)
-    print(f"scale test  ckpt={CKPT}  dir={MOVE_DIR}  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
-          f"  (mean over episode, GRACE-skipped)\n")
-    print(f"{'move(m)':<9}{'mode':<8}{'loop':>8}{'load':>8}{'sat_lam':>9}{'sat_w':>8}")
-    for s in SCALES:
-        traj = make_quintic_pose(np.array(MOVE_DIR, float) * s, np.zeros(3), RAMP, HOLD, np.asarray(BASE_POS, float))
-        dpos, _, _ = expert_path(traj, END_TIME)
-        do_plot = s in PLOT_SCALES
+
+    def run_one(traj, dpos, col_label, plot_tag, do_plot):
         lb, hist_b = roll(env, actor, om, os_, traj, dpos, use_policy=False, record=do_plot)
         lp, hist_p = roll(env, actor, om, os_, traj, dpos, use_policy=True, record=do_plot)
-        def fmt(m):
-            if not m[4]:
-                return f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>9.2f}{m[3]:>8.2f}"
-            if m[5] is None:
-                return "   -- BLEW UP (NaN) --"
-            return f"   BLEW @ {m[7]:.1f}s  load {m[5]:.2f}m off  vmax {m[6]:.0f} m/s"
-        print(f"{s:<9.1f}{'base':<8}{fmt(lb)}")
+        print(f"{col_label:<9}{'base':<8}{fmt(lb)}")
         print(f"{'':<9}{'policy':<8}{fmt(lp)}")
         print()
         if do_plot:
             if hist_b and len(hist_b["t"]) > 1:
-                plot_run(hist_b, traj, env.epsilon, s, "base")
+                plot_run(hist_b, traj, env.epsilon, plot_tag, "base", horizon)
             if hist_p and len(hist_p["t"]) > 1:
-                plot_run(hist_p, traj, env.epsilon, s, "policy")
+                plot_run(hist_p, traj, env.epsilon, plot_tag, "policy", horizon)
+
+    if USE_CUSTOM:
+        from trajectories import custom_set
+        pairs, n_anchor = training_pairs()               # anchors (customs) precomputed in expert_lib.npz
+        assert CUSTOM_IDX < n_anchor, f"CUSTOM_IDX {CUSTOM_IDX} >= {n_anchor} customs"
+        ctraj, dpos = pairs[CUSTOM_IDX]                   # (traj, PRECOMPUTED dpos) — no expert rollout, no IPOPT
+        name = custom_set()[CUSTOM_IDX][1]["name"]
+        print(f"scale test  ckpt={CKPT}  CUSTOM[{CUSTOM_IDX}]={name}  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
+              f"  (mean over episode, GRACE-skipped)\n")
+        print(f"{'traj':<9}{'mode':<8}{'loop':>8}{'load':>8}{'sat_lam':>9}{'sat_w':>8}")
+        run_one(ctraj, dpos, name, f"custom[{CUSTOM_IDX}] {name}", do_plot=True)
+    else:
+        print(f"scale test  ckpt={CKPT}  dir={MOVE_DIR}  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
+              f"  (mean over episode, GRACE-skipped)\n")
+        print(f"{'move(m)':<9}{'mode':<8}{'loop':>8}{'load':>8}{'sat_lam':>9}{'sat_w':>8}")
+        for s in SCALES:
+            traj = make_quintic_pose(np.array(MOVE_DIR, float) * s, np.zeros(3), RAMP, HOLD, np.asarray(BASE_POS, float))
+            dpos, _, _ = expert_path(traj, END_TIME)
+            run_one(traj, dpos, f"{s:.1f}", f"{s:.0f} m {tuple(MOVE_DIR)}", do_plot=(s in PLOT_SCALES))
     env.close()
     plt.show()
 

@@ -46,6 +46,12 @@ TRAJ_RANDOMIZE = True
 GUARANTEE_ANCHOR = 4     # force >= this many NON-quintic episodes/iter from the solver-engaging customs
                          #   (the pure-+x DEFAULT LINE is now dropped from the anchors — see training_pairs —
                          #   to de-tilt the distribution off +x). The rest are sampled from all quintics.
+# --- OVERFIT / warm-start ADAPTATION experiment ---
+# True = ignore the 55-traj distribution; warm-start from WARMSTART and FORCE-ADAPT on a small fixed set
+# (+y quintic + +x+y custom), evaluating on the SAME two. Tests whether the net CAN be pushed to solve off-x.
+# Check +x FORGETTING afterwards with scale_test. Saves to residual_mappo_overfit*.pt -> protects the main
+# policy AND the WARMSTART source. Set WARMSTART=None here to run the cold version instead.
+OVERFIT = True
 # Delay CEILING = 2 for ALL drones, EVERY episode, train AND eval (was a per-episode random {0,1,2}
 # ceiling in training + [1,2,2,1] in eval -> inconsistent, and some drones near-synchronous). Now the
 # actual per-step delay is a uniform 0-1-2 random walk on every drone; variety comes from the WALK
@@ -60,10 +66,10 @@ EVAL_DELAYS = [2, 2, 2, 2]
 # --- PPO hyperparameters ---
 ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 70000       # ~10 episodes / update. Domain randomization adds per-SCENARIO draw variance
+STEPS_PER_ITER = 56000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 5
+EPOCHS = 10
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
 GAMMA = 0.99
 LAMBDA = 0.95
@@ -331,6 +337,22 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
             np.mean(ep_rews), np.mean(ep_loops), n_blowups)
 
 
+def overfit_set():
+    """Warm-start ADAPTATION experiment fixed set: +y quintic (1 m, ramp 12 — the scale_test case) + the
+    +x+y custom (from the lib). Eval = the SAME two (selection watches the targets). +x forgetting is checked
+    afterwards with scale_test. Returns (train_pairs, eval_scen)."""
+    from controller import make_quintic_pose
+    from expert_reference import expert_path
+    from trajectories import BASE_POS as BP, HOLD as HD
+    yq = make_quintic_pose(np.array([0.0, 1.0, 0.0]), np.zeros(3), ramp=12.0, hold=HD, base_pos=np.asarray(BP, float))
+    yq_dpos, _, _ = expert_path(yq, T_END)                   # +y quintic not in the lib -> compute once
+    pr, _ = training_pairs()
+    xy_traj, xy_dpos = pr[2]                                 # +x+y custom (precomputed in the lib)
+    train = [(yq, yq_dpos), (xy_traj, xy_dpos)]
+    ev = [("yquintic", yq, yq_dpos), ("xy_custom", xy_traj, xy_dpos)]
+    return train, ev
+
+
 def main():
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
@@ -340,11 +362,19 @@ def main():
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
     env.default_expert_pos = env.expert_pos.copy()   # DEFAULT-traj expert ref (eval/estimate baseline)
-    pairs, n_anchor = training_pairs() if TRAJ_RANDOMIZE else (None, 0)   # (traj, expert_dpos) per traj
-    eval_scen = eval_scenarios()         # [(line), (held-out quintic)] -> mean = the SELECTION metric
-    if TRAJ_RANDOMIZE:
+    if OVERFIT:
+        pairs, eval_scen = overfit_set()
+        n_anchor = len(pairs)            # all pairs are "anchors" -> uniform sampling of the fixed set every ep
+        print(f"OVERFIT adaptation: warm={WARMSTART}  train+eval on {len(pairs)} trajs "
+              f"[+y quintic, +x+y custom]  (saves -> residual_mappo_overfit*.pt)")
+    elif TRAJ_RANDOMIZE:
+        pairs, n_anchor = training_pairs()   # (traj, expert_dpos) per traj
+        eval_scen = eval_scenarios()         # [(line), (held-out quintic)] -> mean = the SELECTION metric
         print(f"trajectory randomization ON: {len(pairs)} trajs ({n_anchor} non-quintic anchors, "
               f">= {GUARANTEE_ANCHOR}/iter guaranteed) from expert_lib.npz")
+    else:
+        pairs, n_anchor = None, 0
+        eval_scen = eval_scenarios()
     print(f"eval on {len(eval_scen)} trajs {[s[0] for s in eval_scen]} (mean = best-net selection metric)")
     state_dim = critic_input(env).shape[0]        # 42 state + n delays + 3n expert target (see critic_input)
     obs_dim = env._obs_space.shape[0]
@@ -458,7 +488,7 @@ def main():
                        + (f"  DET_BLOWUPS {e['blowups']}" if e["blowups"] else ""))
             if e["reward"] > best_reward:   # select on DETERMINISTIC REWARD (encodes ALL objectives), not
                 best_reward = e["reward"]   # DET_loop (blind to stall/load). Scoped to THIS run (reset above).
-                save_ckpt("residual_mappo.pt", best_reward)
+                save_ckpt("residual_mappo_overfit.pt" if OVERFIT else "residual_mappo.pt", best_reward)
                 det_str += f"  (new best {best_reward:.3f} -> saved)"
         blow_str = f"  blowups {n_blowups}" if n_blowups else ""
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
@@ -466,7 +496,7 @@ def main():
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
 
-    save_ckpt("residual_mappo_last.pt", best_reward)   # LATEST resumable state (resume via WARMSTART=this)
+    save_ckpt("residual_mappo_overfit_last.pt" if OVERFIT else "residual_mappo_last.pt", best_reward)   # LATEST resumable state
     env.close()
     print(f"best (deploy) -> residual_mappo.pt (BEST DET_R {best_reward:.3f});  resume -> residual_mappo_last.pt")
 
