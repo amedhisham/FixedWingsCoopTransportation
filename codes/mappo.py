@@ -52,14 +52,13 @@ GUARANTEE_ANCHOR = 4     # force >= this many NON-quintic episodes/iter from the
 # Check +x FORGETTING afterwards with scale_test. Saves to residual_mappo_overfit*.pt -> protects the main
 # policy AND the WARMSTART source. Set WARMSTART=None here to run the cold version instead.
 OVERFIT = True
-# OVERFIT is now a FEASIBLE-task curriculum step 1: a GENTLE +y quintic (slow ramp) on a SHORT horizon that
-# ends right after the move (~2 s loiter) — so a no-blowup outcome is REACHABLE with margin. Rationale: dense
-# overspeed penalty + a fixed -100 terminal makes surviving-then-blowing WORSE than blowing early (survival
-# just accrues more penalty for the same terminal) -> early-death gradient. Make the good outcome reachable
-# and survival goes penalty-free (sub-speed-3), flipping the incentive positive. Ratchet ramp DOWN / horizon
-# UP later while keeping blowups ~0. Verified in scale_test: the warm-start policy already survives this.
-OVERFIT_RAMP = 16.0                    # gentle +y move duration (was 12) -> lower peak speed, more shear margin
-OVERFIT_END  = 1.0 + OVERFIT_RAMP + 2.0  # HOLD(1) + move + 2 s tail = 19 s; episode ends here, NOT at T_END=35
+# OVERFIT is a FEASIBLE-task CURRICULUM (incentive stays coherent only when a no-blowup outcome is reachable —
+# dense overspeed penalty + fixed -100 terminal makes surviving-then-blowing worse than blowing early, so the
+# task must actually be survivable). Ratchet difficulty up one rung at a time, warm-starting each from the last.
+#   RUNG 1 (done): gentle +y quintic, ramp 16, SHORT 19 s horizon -> solved, loop ~0.24, +x forgot ~0.01.
+#   RUNG 2 (now):  +x+y CUSTOM, FULL 35 s horizon. It stopped blowing once the +y-adapted net warm-starts it,
+#                  so it's now feasible at full length -> teaches a COMBINATION direction (shares +x and +y).
+OVERFIT_END = T_END                    # RUNG 2: back to the full 35 s (custom dpos is precomputed at T_END)
 # Delay CEILING = 2 for ALL drones, EVERY episode, train AND eval (was a per-episode random {0,1,2}
 # ceiling in training + [1,2,2,1] in eval -> inconsistent, and some drones near-synchronous). Now the
 # actual per-step delay is a uniform 0-1-2 random walk on every drone; variety comes from the WALK
@@ -72,7 +71,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 120                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
 STEPS_PER_ITER = 28000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
@@ -100,7 +99,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo_overfit_ch_y.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_last.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
@@ -349,17 +348,14 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
 
 
 def overfit_set():
-    """FEASIBLE-task curriculum step 1: a single GENTLE +y quintic (1 m, ramp OVERFIT_RAMP=16) rolled to the
-    SHORT horizon OVERFIT_END (~19 s) so the episode ends right after the move — a no-blowup outcome is
-    reachable with margin, making the dense-penalty incentive coherent (see the OVERFIT block up top). Eval =
-    the SAME traj. +x forgetting is checked afterwards with scale_test. Returns (train_pairs, eval_scen)."""
-    from controller import make_quintic_pose
-    from expert_reference import expert_path
-    from trajectories import BASE_POS as BP, HOLD as HD
-    yq = make_quintic_pose(np.array([0.0, 1.0, 0.0]), np.zeros(3), ramp=OVERFIT_RAMP, hold=HD, base_pos=np.asarray(BP, float))
-    yq_dpos, _, _ = expert_path(yq, OVERFIT_END)             # +y quintic not in the lib -> compute once, SHORT horizon
-    train = [(yq, yq_dpos)]
-    ev = [("yquintic", yq, yq_dpos)]
+    """FEASIBLE-task curriculum RUNG 2: the single +x+y CUSTOM (training_pairs()[2], precomputed in the lib at
+    the full T_END horizon). Warm-started from the +y-solved net it no longer blows up, so it's feasible at
+    full length -> teaches a COMBINATION direction (shares +x and +y). Eval = the SAME traj. Returns
+    (train_pairs, eval_scen)."""
+    pr, _ = training_pairs()
+    xy_traj, xy_dpos = pr[2]                                 # +x+y custom (precomputed in the lib at T_END)
+    train = [(xy_traj, xy_dpos)]
+    ev = [("xy_custom", xy_traj, xy_dpos)]
     return train, ev
 
 
@@ -367,8 +363,8 @@ def main():
     rng = np.random.default_rng(SEED)
     torch.manual_seed(SEED)
 
-    end_time = OVERFIT_END if OVERFIT else T_END   # OVERFIT: SHORT horizon (ends right after the gentle move)
-    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW, end_time=end_time,   # 35 s full trajs, or ~19 s OVERFIT
+    end_time = OVERFIT_END if OVERFIT else T_END   # OVERFIT horizon per rung (RUNG 2 = full T_END)
+    env = ResidualMARLEnv(**DESYNC, disable_dw=DISABLE_DW, end_time=end_time,   # 35 s (RUNG 2 back to full)
                           track_clean_lambda=(CONSIST_W > 0 or CONSIST_LAM_W > 0))  # clean-view for consistency targets
     N = env.n
     env.reset(seed=SEED)                 # populate the plant state so env.state() is valid
@@ -376,8 +372,8 @@ def main():
     if OVERFIT:
         pairs, eval_scen = overfit_set()
         n_anchor = len(pairs)            # all pairs are "anchors" -> uniform sampling of the fixed set every ep
-        print(f"OVERFIT (feasible curriculum): warm={WARMSTART}  gentle +y quintic ramp={OVERFIT_RAMP:.0f} "
-              f"horizon={OVERFIT_END:.0f}s (ends after move)  (saves -> residual_mappo_overfit*.pt)")
+        print(f"OVERFIT (feasible curriculum RUNG 2): warm={WARMSTART}  +x+y custom  "
+              f"horizon={OVERFIT_END:.0f}s  (saves -> residual_mappo_overfit*.pt)")
     elif TRAJ_RANDOMIZE:
         pairs, n_anchor = training_pairs()   # (traj, expert_dpos) per traj
         eval_scen = eval_scenarios()         # [(line), (held-out quintic)] -> mean = the SELECTION metric

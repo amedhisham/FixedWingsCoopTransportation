@@ -142,7 +142,7 @@ class ResidualMARLEnv(ParallelEnv):
         #   delta_lambda enters via N   -> nullspace -> reshapes drone trajectory, load-neutral.
         #   delta_wrench  enters via G+ -> range     -> trims the desired wrench, fixes load.
         #   Built in force space as [G+ @ dw + N @ dlam] so the two subspaces stay clean.
-        cap_lam=0.65,      # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.96N/drone nullspace
+        cap_lam=0.5,      # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.96N/drone nullspace
                            #   force (base null slice ~1.85N). Authority to reshape the loop; the blowup
                            #   guard (not this cap) prevents crashes, so this is set for AUTHORITY.
         cap_w=0.2,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
