@@ -142,7 +142,7 @@ class ResidualMARLEnv(ParallelEnv):
         #   delta_lambda enters via N   -> nullspace -> reshapes drone trajectory, load-neutral.
         #   delta_wrench  enters via G+ -> range     -> trims the desired wrench, fixes load.
         #   Built in force space as [G+ @ dw + N @ dlam] so the two subspaces stay clean.
-        cap_lam=0.5,       # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.74N/drone nullspace
+        cap_lam=0.65,      # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.96N/drone nullspace
                            #   force (base null slice ~1.85N). Authority to reshape the loop; the blowup
                            #   guard (not this cap) prevents crashes, so this is set for AUTHORITY.
         cap_w=0.2,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
@@ -172,7 +172,7 @@ class ResidualMARLEnv(ParallelEnv):
                              #   right past the line. The linear term gives immediate BITE at the threshold
                              #   (v=3.5 -> 0.75, 3x) so excursions hurt as soon as they cross 3, not only at v>=5.
         # --- dlam OVERSHOOT hinge (UN-SATURATE the nullspace head) ---
-        overshoot_lam_w=1.0,   # penalize the RAW dlam action's overshoot BEYOND the cap: over_sat = max(0, sat_lam-1),
+        overshoot_lam_w=10.0,  # penalize the RAW dlam action's overshoot BEYOND the cap: over_sat = max(0, sat_lam-1),
                                #   pen = w*(over_sat^2 + lin*over_sat), capped. sat_lam = ||raw dlam|| / cap_lam.
                                #   NOT a dlam-magnitude penalty (below cap = ZERO, full authority): it only bites the
                                #   part already CLIPPED AWAY -> costs the policy nothing real, just removes the FREE
