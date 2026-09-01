@@ -19,13 +19,13 @@ from classical_agent import ClassicalAgent
 from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
-from deploy_prdot import load_policy, run_episode, POLICY
+from deploy_prdot import load_policy, run_episode, POLICY, euler_deg
 from trajectories import heldout_set, custom_set, showcase_set
 
 # SHOWCASE: net-vs-optimizer overlay on ONE demo trajectory (decoupled from the training set) at
 # its OWN horizon — shows the net handles any length. None | "short" | "long" (trajectories.
 # showcase_set); SHOWCASE_IDX picks which entry (0=line, 1..=quintics). Overrides the toggles below.
-SHOWCASE = "short"
+SHOWCASE = "long"
 SHOWCASE_IDX = 0      # 0 -> the straight-line demo; 1.. -> the quintic demos
 SHOWCASE_M = 3        # quintics available per preset (so SHOWCASE_IDX can reach 1..M)
 
@@ -37,6 +37,38 @@ USE_CUSTOM = None    # set to a custom index (0..4: +x,+y,+x+y,-x+y,+x-y) to sur
 
 BYPASS_OPT = False     # adaptive optimizer (the real expert), matches collection
 RUN_NET = True         # False -> optimizer ONLY (skip the net, fast) to survey the optimizer per traj
+TIME_MARKS = 7         # 3-D trajectory plot: this many evenly-spaced "t=Xs" numbers along each DRONE path
+                       #   so the spatial curves carry a time reference (0 -> off)
+
+
+def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
+    """Drop n evenly-spaced t=Xs markers along a 3-D (x,y,z) path so the spatial plot carries a time axis.
+    xyz: (T,>=3) positions on the same time grid as t. Snaps each target time to the nearest sample."""
+    if n <= 0 or len(t) < 2:
+        return
+    t = np.asarray(t)
+    for tm in np.linspace(t[0], t[-1], n):
+        k = min(int(np.argmin(np.abs(t - tm))), len(xyz) - 1)   # clamp (path may be 1 sample shorter)
+        x, y, z = xyz[k, 0], xyz[k, 1], xyz[k, 2]
+        ax.plot([x], [y], [z], "o", color=color, ms=4, mfc="white", mew=1.2, zorder=6)
+        if label:
+            ax.text(x, y, z, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
+
+
+def _tracking_panels(t, ref, net_act, opt_act, comp_labels, unit, title):
+    """3-panel ref-vs-actual time series (X/Y/Z or roll/pitch/yaw). ref is the shared reference
+    (dashed black); net_act/opt_act are actual tracks (either may be None)."""
+    fig, ax = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
+    for k, lbl in enumerate(comp_labels):
+        ax[k].plot(t, ref[:, k], "k--", lw=1.5, label="reference")
+        if net_act is not None:
+            ax[k].plot(t, net_act[:, k], "C0", lw=1.3, label="net")
+        if opt_act is not None:
+            ax[k].plot(t, opt_act[:, k], "C3", lw=1.1, ls="--", alpha=0.8, label="optimizer")
+        ax[k].set_ylabel(f"{lbl} ({unit})"); ax[k].grid(True)
+        if k == 0:
+            ax[k].legend(loc="upper right", fontsize=8)
+    ax[-1].set_xlabel("Time (s)"); fig.suptitle(title)
 
 
 def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
@@ -48,6 +80,7 @@ def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
     agent.reset()
     prev_f = np.array([0.0, 0.0, FZ] * N)
     t_hist, load_hist, ref_hist = [], [], []
+    rot_hist, rotref_hist = [], []           # load orientation (deg): actual vs reference
     dpos = [[] for _ in range(N)]
     dvel = [[] for _ in range(N)]            # PLANT drone speed (from the FMU)
     vRi_hist = [[] for _ in range(N)]        # optimizer's ANALYTIC ||v_Ri|| (the epsilon-constraint value)
@@ -71,9 +104,11 @@ def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
         deriv = (ff - prev_f) / DT
         prev_f = ff.copy()
 
+        ref_t = get_reference_trajectory(t, traj)
         t_hist.append(t)
         load_hist.append(pos.copy())
-        ref_hist.append(get_reference_trajectory(t, traj)[0].copy())
+        ref_hist.append(ref_t[0].copy())
+        rot_hist.append(euler_deg(R)); rotref_hist.append(euler_deg(ref_t[2]))
         for i in range(N):
             dpos[i].append(obs42[18 + 3 * i: 18 + 3 * i + 3].copy())
             dvel[i].append(np.linalg.norm(obs42[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
@@ -86,6 +121,7 @@ def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
     err = np.linalg.norm(load - ref, axis=1)
     dvel = [np.array(v) for v in dvel]
     return dict(t=np.array(t_hist), load=load, ref=ref,
+                rot=np.array(rot_hist), rot_ref=np.array(rotref_hist),
                 dpos=[np.array(p) for p in dpos], dvel=dvel,
                 vRi=[np.array(v) for v in vRi_hist],
                 lam=[np.array(l) for l in lam_hist],
@@ -98,6 +134,14 @@ def plot_compare(net, opt, title=""):
     """Overlay net (solid) vs optimizer (dashed). net may be None (optimizer-only survey)."""
     t = opt["t"]; sfx = f" — {title}" if title else ""
     have_net = net is not None
+
+    # 0a. load POSITION x/y/z — reference vs actual (net + optimizer)
+    _tracking_panels(t, opt["ref"], net["load"] if have_net else None, opt["load"],
+                     "XYZ", "m", "Load position — ref vs actual" + sfx)
+
+    # 0b. load ORIENTATION roll/pitch/yaw (deg) — reference vs actual
+    _tracking_panels(t, opt["rot_ref"], net["rot"] if have_net else None, opt["rot"],
+                     ["roll", "pitch", "yaw"], "deg", "Load orientation — ref vs actual" + sfx)
 
     # 1. drone velocity norms: PLANT speed (net solid, opt dashed) + epsilon floor.
     plt.figure(figsize=(11, 5.5))
@@ -124,20 +168,25 @@ def plot_compare(net, opt, title=""):
             ax[i].legend(loc="upper right")
     ax[-1].set_xlabel("Time (s)"); fig.suptitle("Lambda — net vs optimizer" + sfx)
 
-    # 3. drone XY trajectories + load
-    plt.figure(figsize=(8, 7))
+    # 3. drone XYZ trajectories + load (3-D), with t=Xs numbers along each drone path
+    s0 = 2                                                        # skip the t=0 sample (weird init jump)
+    fig = plt.figure(figsize=(9, 7.5))
+    ax = fig.add_subplot(111, projection="3d")
     for i in range(N):
+        dp = (net if have_net else opt)["dpos"][i]               # path the time-numbers ride on
         if have_net:
-            plt.plot(net["dpos"][i][:, 0], net["dpos"][i][:, 1], color=f"C{i}", lw=1.4,
-                     label=f"drone {i+1} net")
-        plt.plot(opt["dpos"][i][:, 0], opt["dpos"][i][:, 1], color=f"C{i}", lw=1.2, ls="--",
-                 alpha=0.7, label=f"drone {i+1} opt")
+            ax.plot(net["dpos"][i][s0:, 0], net["dpos"][i][s0:, 1], net["dpos"][i][s0:, 2],
+                    color=f"C{i}", lw=1.4, label=f"drone {i+1} net")
+        ax.plot(opt["dpos"][i][s0:, 0], opt["dpos"][i][s0:, 1], opt["dpos"][i][s0:, 2],
+                color=f"C{i}", lw=1.2, ls="--", alpha=0.7, label=f"drone {i+1} opt")
+        _mark_times(ax, t[s0:], dp[s0:], color=f"C{i}", label=True)   # NUMBERS on the drone trajectories
     if have_net:
-        plt.plot(net["load"][:, 0], net["load"][:, 1], "k", lw=2, label="load net")
-    plt.plot(opt["load"][:, 0], opt["load"][:, 1], color="gray", lw=2, ls="--", label="load opt")
-    plt.xlabel("X (m)"); plt.ylabel("Y (m)")
-    plt.title("Drone XY trajectories — net (solid) vs optimizer (dashed)" + sfx)
-    plt.legend(ncol=2, fontsize=8); plt.grid(True); plt.axis("equal")
+        ax.plot(net["load"][s0:, 0], net["load"][s0:, 1], net["load"][s0:, 2], "k", lw=2, label="load net")
+    ax.plot(opt["load"][s0:, 0], opt["load"][s0:, 1], opt["load"][s0:, 2],
+            color="gray", lw=2, ls="--", label="load opt")
+    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
+    ax.set_title("Drone XYZ trajectories — net (solid) vs optimizer (dashed)" + sfx)
+    ax.legend(ncol=2, fontsize=8)
 
     # 4. optimizer decision variables A (amplitude) and xi (frequency) — optimizer only
     if "A" in opt:

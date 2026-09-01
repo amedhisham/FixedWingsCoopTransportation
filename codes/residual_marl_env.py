@@ -145,7 +145,7 @@ class ResidualMARLEnv(ParallelEnv):
         cap_lam=0.5,      # cap on delta_lambda, fraction of ||lambda_base|| -> ~0.96N/drone nullspace
                            #   force (base null slice ~1.85N). Authority to reshape the loop; the blowup
                            #   guard (not this cap) prevents crashes, so this is set for AUTHORITY.
-        cap_w=0.2,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
+        cap_w=0.3,         # cap on delta_wrench, fraction of ||w_d||(~6.9) -> ~0.34N/drone load-trim force
                            #   (G+ gain ~0.25). Raised from 0.12 to give delta_wrench muscle to act on the
                            #   swing term below (a louder reward into a capped actuator does nothing).
         blowup_v=100.0,    # if any drone speed exceeds this, the state is diverging -> truncate (guard).

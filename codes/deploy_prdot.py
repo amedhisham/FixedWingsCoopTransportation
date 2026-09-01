@@ -26,6 +26,13 @@ from networks import Actor
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from collect_prdot_data import Reconstructor, build_input, LAM0, SUFFIX, init_lam_history, push_lam
 from trajectories import heldout_set, showcase_set
+from scipy.spatial.transform import Rotation as _Rt
+
+
+def euler_deg(R):
+    """Load orientation 3x3 -> (roll, pitch, yaw) degrees for ref-vs-actual plotting."""
+    return _Rt.from_matrix(np.asarray(R, float)).as_euler("xyz", degrees=True)
+
 
 POLICY = f"il_actor_prdot_dagger{SUFFIX}.pt"   # the FINAL F1 policy (daggered, ANALYTIC-aware).
                                                #   was hardcoded "il_actor_prdot.pt" -> loaded a STALE
@@ -78,6 +85,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
     lam_a = None if LAM_LP_TAU is None else DT / (LAM_LP_TAU + DT)
     recon = Reconstructor(Bb, L0, DT)
     t_hist, load_hist, ref_hist = [], [], []
+    rot_hist, rotref_hist = [], []                   # load orientation (deg): actual vs reference
     dpos = [[] for _ in range(N)]
     dvel = [[] for _ in range(N)]
     lam_hist = [[] for _ in range(N)]
@@ -106,9 +114,11 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
         deriv = (ff - prev_f) / DT
         prev_f = ff.copy()
 
+        ref_t = get_reference_trajectory(t, traj)
         t_hist.append(t)
         load_hist.append(pos.copy())
-        ref_hist.append(get_reference_trajectory(t, traj)[0].copy())
+        ref_hist.append(ref_t[0].copy())
+        rot_hist.append(euler_deg(R)); rotref_hist.append(euler_deg(ref_t[2]))
         for i in range(N):
             dpos[i].append(obs42[18 + 3 * i: 18 + 3 * i + 3].copy())
             dvel[i].append(np.linalg.norm(obs42[18 + 3 * N + 3 * i: 18 + 3 * N + 3 * i + 3]))
@@ -125,6 +135,7 @@ def run_episode(net, om, os_, env, agent, Bb, L0, traj=None, t_end=None):
     err = np.linalg.norm(load - ref, axis=1)
     dvel = [np.array(v) for v in dvel]
     return dict(t=np.array(t_hist), load=load, ref=ref,
+                rot=np.array(rot_hist), rot_ref=np.array(rotref_hist),
                 dpos=[np.array(p) for p in dpos], dvel=dvel,
                 lam=[np.array(l) for l in lam_hist],
                 track_mean=float(err.mean()), track_max=float(err.max()),

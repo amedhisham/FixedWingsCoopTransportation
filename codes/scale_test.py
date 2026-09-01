@@ -20,16 +20,16 @@ from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo_overfit_ch_y.pt"          # change to the policy you want to test
-SCALES = [1.0]      # +x displacement (m)
+CKPT = "residual_mappo_r4base_wide.pt"          # change to the policy you want to test
+SCALES = [5.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
 RAMP = 16.0                          # quintic move duration (s)
 END_TIME = HOLD + RAMP + 1        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
 DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (1.0, 0.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+MOVE_DIR = (0.0, 1.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
 USE_CUSTOM = True                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
-CUSTOM_IDX = 2                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
+CUSTOM_IDX = 0                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
                                      #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
 DELAYS = EVAL_DELAYS if DESYNC_ON else [0, 0, 0, 0]
@@ -97,6 +97,23 @@ def roll(env, actor, om, os_, traj, dpos, use_policy, record=False):
     return m + (blew, blow_loadoff, blow_vmax, blow_t), hist
 
 
+TIME_MARKS = 7         # 3-D trajectory plot: this many evenly-spaced "t=Xs" numbers along each DRONE path
+
+
+def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
+    """Drop n evenly-spaced t=Xs markers along a 3-D (x,y,z) path so the spatial plot carries a time axis.
+    xyz: (T,>=3) positions on the same time grid as t. Snaps each target time to the nearest sample."""
+    if n <= 0 or len(t) < 2:
+        return
+    t = np.asarray(t)
+    for tm in np.linspace(t[0], t[-1], n):
+        k = min(int(np.argmin(np.abs(t - tm))), len(xyz) - 1)   # clamp (path may be 1 sample shorter)
+        x, y, z = xyz[k, 0], xyz[k, 1], xyz[k, 2]
+        ax.plot([x], [y], [z], "o", color=color, ms=4, mfc="white", mew=1.2, zorder=6)
+        if label:
+            ax.text(x, y, z, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
+
+
 def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
     if end_time is None:
         end_time = END_TIME
@@ -133,12 +150,14 @@ def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
     plt.xlabel("Time (s)"); plt.ylabel("Velocity norm (m/s)")
     plt.title(f"Drone velocity norms — {tag}"); plt.legend(); plt.grid(True)
 
-    # 3. 3-D trajectories (drones + load)
+    # 3. 3-D trajectories (drones + load), with t=Xs numbers along each drone path
+    s0 = 2                                               # skip the t=0 sample (weird init jump)
     fig3 = plt.figure(figsize=(9, 7))
     ax3 = fig3.add_subplot(111, projection="3d")
     for i in range(n):
-        ax3.plot(dpos[:, i, 0], dpos[:, i, 1], dpos[:, i, 2], label=f"Drone {i+1}")
-    ax3.plot(load[:, 0], load[:, 1], load[:, 2], "k--", lw=2, label="Load")
+        ax3.plot(dpos[s0:, i, 0], dpos[s0:, i, 1], dpos[s0:, i, 2], color=f"C{i}", label=f"Drone {i+1}")
+        _mark_times(ax3, t[s0:], dpos[s0:, i, :], color=f"C{i}", label=True)   # NUMBERS on drone paths
+    ax3.plot(load[s0:, 0], load[s0:, 1], load[s0:, 2], "k--", lw=2, label="Load")
     ax3.set_xlabel("X (m)"); ax3.set_ylabel("Y (m)"); ax3.set_zlabel("Z (m)")
     ax3.set_title(f"Drone + load trajectories — {tag}"); ax3.legend()
 
