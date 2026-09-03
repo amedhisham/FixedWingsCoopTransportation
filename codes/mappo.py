@@ -23,8 +23,10 @@ import matplotlib.pyplot as plt
 
 from residual_marl_env import ResidualMARLEnv
 from networks import Actor, Critic
-from expert_reference import training_pairs, eval_scenarios
+from expert_reference import training_pairs, eval_scenarios, expert_path
 from collect_il_data import T_END          # 35 s — the horizon the trajectories + expert refs span
+from controller import make_quintic_pose
+from trajectories import BASE_POS, HOLD
 
 # --- desync spec (training distribution; matches the plan) ---
 DESYNC = dict(pos_noise=0.03, vel_noise=0.10, noise_corr=0.995)
@@ -58,7 +60,22 @@ OVERFIT = True
 #   RUNG 1 (done): gentle +y quintic, ramp 16, SHORT 19 s horizon -> solved, loop ~0.24, +x forgot ~0.01.
 #   RUNG 2 (now):  +x+y CUSTOM, FULL 35 s horizon. It stopped blowing once the +y-adapted net warm-starts it,
 #                  so it's now feasible at full length -> teaches a COMBINATION direction (shares +x and +y).
-OVERFIT_END = T_END                    # RUNG 2: back to the full 35 s (custom dpos is precomputed at T_END)
+# RUNG 3 (MIX): train JOINTLY over several movement DIRECTIONS at once — the generalization vehicle.
+# Distillation proved the joint map is REPRESENTABLE (R^2~0.99, [[f2-distillation-capacity-verdict]]); the ONLY
+# wall is the incentive trap (blow-ups late -> more punishment). Nothing blows at scale 5 from ch5, so it's
+# feasible as-is; RATCHET MIX_SCALE up once loops settle. Each direction is a rest-to-rest quintic (gentle
+# 5th-order, ramp MIX_RAMP) rolled to the SHORT move-horizon (HOLD+RAMP+margin) — no wasted static-hold tail.
+MIX_DIRS = [                           # (label, unit move direction). scale via MIX_SCALE.
+    ("+x",     (1.0,  0.0,  0.0)),
+    ("+y",     (0.0,  1.0,  0.0)),
+    ("+x-y+z", (1.0, -1.0,  0.5)),
+    ("+x+y+z", (1.0,  1.0,  0.5)),
+    ("+x+y-z", (1.0,  1.0, -0.5)),
+]
+MIX_SCALE = 5.0                        # displacement magnitude (m) along each dir. DROP if any member blows.
+MIX_RAMP = 16.0                        # quintic move duration (s); gentle.
+OVERFIT_END = HOLD + MIX_RAMP + 1.0    # ~18 s: end just after the move completes (matches scale_test) — the
+                                       # move is done at HOLD+RAMP; no point simulating a long static hold.
 # Delay CEILING = 2 for ALL drones, EVERY episode, train AND eval (was a per-episode random {0,1,2}
 # ceiling in training + [1,2,2,1] in eval -> inconsistent, and some drones near-synchronous). Now the
 # actual per-step delay is a uniform 0-1-2 random walk on every drone; variety comes from the WALK
@@ -73,17 +90,17 @@ EVAL_DELAYS = [2, 2, 2, 2]
 # --- PPO hyperparameters ---
 ITERS = 120                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 28000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
+STEPS_PER_ITER = 36000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 10
+EPOCHS = 8
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
 GAMMA = 0.99
 LAMBDA = 0.95
 CLIP = 0.2
 LR_ACTOR = 3e-4
 LR_CRITIC = 1e-3
-ENT_COEF = 0.0               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
+ENT_COEF = 2e-3               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
                              #   forced ENT_COEF>0 was a REGIME-4 artifact of the JERK term (its penalty was
                              #   cheapest to cut by shrinking log_std -> killing exploration). With no jerk,
                              #   nothing pushes entropy down, so 0 works: PPO clip + the Gaussian's natural
@@ -348,14 +365,19 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
 
 
 def overfit_set():
-    """FEASIBLE-task curriculum RUNG 2: the single +x+y CUSTOM (training_pairs()[2], precomputed in the lib at
-    the full T_END horizon). Warm-started from the +y-solved net it no longer blows up, so it's feasible at
-    full length -> teaches a COMBINATION direction (shares +x and +y). Eval = the SAME traj. Returns
-    (train_pairs, eval_scen)."""
-    pr, _ = training_pairs()
-    xy_traj, xy_dpos = pr[2]                                 # +x+y custom (precomputed in the lib at T_END)
-    train = [(xy_traj, xy_dpos)]
-    ev = [("xy_custom", xy_traj, xy_dpos)]
+    """FEASIBLE-task curriculum RUNG 3 (MIX): a small set of movement DIRECTIONS trained JOINTLY -> the
+    generalization vehicle. Each dir is a rest-to-rest quintic (MIX_SCALE m, ramp MIX_RAMP, held to T_END via
+    expert_path); train samples them uniformly, eval scores EVERY member. Feasibility is on YOU: gentle MIX_SCALE
+    until nothing blows from WARMSTART, then ratchet. Returns (train_pairs, eval_scen)."""
+    train, ev = [], []
+    for label, d in MIX_DIRS:
+        traj = make_quintic_pose(MIX_SCALE * np.asarray(d, float), np.zeros(3), ramp=MIX_RAMP,
+                                 hold=HOLD, base_pos=np.asarray(BASE_POS, float))
+        dpos, _, _ = expert_path(traj, OVERFIT_END)          # CasADi rollout to the SHORT move-horizon
+        train.append((traj, dpos))
+        ev.append((label, traj, dpos))
+        print(f"  built mix dir {label:<8} |move|={MIX_SCALE:.1f}m ramp {MIX_RAMP:.0f}s  dpos {dpos.shape}",
+              flush=True)
     return train, ev
 
 
@@ -372,8 +394,9 @@ def main():
     if OVERFIT:
         pairs, eval_scen = overfit_set()
         n_anchor = len(pairs)            # all pairs are "anchors" -> uniform sampling of the fixed set every ep
-        print(f"OVERFIT (feasible curriculum RUNG 2): warm={WARMSTART}  +x+y custom  "
-              f"horizon={OVERFIT_END:.0f}s  (saves -> residual_mappo_overfit*.pt)")
+        print(f"OVERFIT (feasible curriculum RUNG 3 MIX): warm={WARMSTART}  "
+              f"{len(pairs)} dirs @ {MIX_SCALE:.1f}m  horizon={OVERFIT_END:.0f}s  "
+              f"(saves -> residual_mappo_overfit*.pt)")
     elif TRAJ_RANDOMIZE:
         pairs, n_anchor = training_pairs()   # (traj, expert_dpos) per traj
         eval_scen = eval_scenarios()         # [(line), (held-out quintic)] -> mean = the SELECTION metric

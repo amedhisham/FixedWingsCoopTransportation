@@ -27,7 +27,7 @@ ROT_RANGE_DEG = 10.0      # each of roll,pitch,yaw ~ U[-ROT, ROT] deg (paper 5-1
 RAMP_MIN, RAMP_MAX = 15.0, 25.0   # move duration ~ U[15,25] -> move-END = hold + ramp ~ U[20,30]s.
                           #   RANDOMIZED (was fixed 10) so there's no constant "move ends at t=15"
                           #   marker for the clock/positional-encoding to memorize.
-HOLD = 1.0                # initial hold (s)
+HOLD = 2.0                # initial hold (s)
 BASE_POS = (0.0, 0.0, 1.39)   # start position (level start, R=I)
 MIN_POS_NORM = 0.3        # reject near-zero moves (trivial / degenerate)
 

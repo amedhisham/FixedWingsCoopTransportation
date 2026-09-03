@@ -20,13 +20,23 @@ from optimizer import cable_force_calculation
 from controller import error_calculation, get_reference_trajectory
 from collect_il_data import read_params, N, DT, T_END, EPS, PHASES, LLC_ALPHA, FZ
 from deploy_prdot import load_policy, run_episode, POLICY, euler_deg
-from trajectories import heldout_set, custom_set, showcase_set
+from controller import make_quintic_pose
+from trajectories import heldout_set, custom_set, showcase_set, BASE_POS, HOLD
+
+# QUINTIC MOVE mode (like scale_test): dial a direction + magnitude + ramp and run a fresh rest-to-rest
+# quintic, net vs optimizer. Overrides SHOWCASE/CUSTOM/DEFAULT when USE_MOVE is True. Horizon ends just
+# after the move completes (HOLD + ramp + margin) — no long static-hold tail.
+USE_MOVE = False
+MOVE_DIR = (-0.06, -0.88, -0.47)   # movement direction (auto-normalized); scaled by MOVE_MAG
+MOVE_MAG = 3.0               # displacement magnitude (m) along MOVE_DIR
+MOVE_RAMP = 16.0             # quintic move duration (s)
+MOVE_MARGIN = 2.0            # extra seconds after the move before the episode ends
 
 # SHOWCASE: net-vs-optimizer overlay on ONE demo trajectory (decoupled from the training set) at
 # its OWN horizon — shows the net handles any length. None | "short" | "long" (trajectories.
 # showcase_set); SHOWCASE_IDX picks which entry (0=line, 1..=quintics). Overrides the toggles below.
 SHOWCASE = "long"
-SHOWCASE_IDX = 0      # 0 -> the straight-line demo; 1.. -> the quintic demos
+SHOWCASE_IDX = 1      # 0 -> the straight-line demo; 1.. -> the quintic demos
 SHOWCASE_M = 3        # quintics available per preset (so SHOWCASE_IDX can reach 1..M)
 
 # next 3 lines kinda dead code 
@@ -39,6 +49,17 @@ BYPASS_OPT = False     # adaptive optimizer (the real expert), matches collectio
 RUN_NET = True         # False -> optimizer ONLY (skip the net, fast) to survey the optimizer per traj
 TIME_MARKS = 7         # 3-D trajectory plot: this many evenly-spaced "t=Xs" numbers along each DRONE path
                        #   so the spatial curves carry a time reference (0 -> off)
+
+
+def move_descr(traj, t_end):
+    """Describe a trajectory by its net MOVE — direction (unit) · magnitude (m) — from the reference's
+    start->end displacement, so the title reads e.g. 'move [0.71 0. 0.71]·5.00m' instead of a bare label."""
+    p0 = np.asarray(get_reference_trajectory(0.0, traj)[0], float)
+    p1 = np.asarray(get_reference_trajectory(t_end - DT, traj)[0], float)
+    d = p1 - p0
+    mag = float(np.linalg.norm(d))
+    u = d / mag if mag > 1e-9 else d
+    return f"move {np.round(u, 2)}·{mag:.2f}m"
 
 
 def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
@@ -130,6 +151,64 @@ def run_episode_opt(env, agent, Bb, L0, traj=None, t_end=None):
                 vmin=float(min(v.min() for v in dvel)))
 
 
+def _clip_len(a, b):
+    """Common leading length of two same-grid time series (guards a 1-sample off-by-one)."""
+    return min(len(a), len(b))
+
+
+def load_track_err(d):
+    """Per-step load tracking error magnitude ||load - ref|| (m) and its MSE (m^2)."""
+    e = d["load"] - d["ref"]
+    mag = np.linalg.norm(e, axis=1)
+    return mag, float((e ** 2).sum(1).mean())
+
+
+def carrier_dev(net, opt):
+    """Per-drone deviation of the NET carriers from the OPTIMIZER carriers (the expert is the ref here).
+    Returns (per-drone ||net_dpos - opt_dpos|| time series, per-drone MSE m^2, overall MSE)."""
+    mags, mses = [], []
+    for i in range(N):
+        L = _clip_len(net["dpos"][i], opt["dpos"][i])
+        e = net["dpos"][i][:L] - opt["dpos"][i][:L]
+        mags.append(np.linalg.norm(e, axis=1))
+        mses.append(float((e ** 2).sum(1).mean()))
+    return mags, mses, float(np.mean(mses))
+
+
+def lambda_dev(net, opt):
+    """Per-drone lambda MSE of net vs optimizer (coordination-signal agreement)."""
+    out = []
+    for i in range(N):
+        L = _clip_len(net["lam"][i], opt["lam"][i])
+        out.append(float(((net["lam"][i][:L] - opt["lam"][i][:L]) ** 2).mean()))
+    return out
+
+
+def print_metrics(net, opt):
+    """Numbers table: load-tracking MSE (net vs opt), carrier MSE vs optimizer, lambda MSE vs optimizer."""
+    _, opt_load_mse = load_track_err(opt)
+    print(f"\n{'metric':<30}{'net':>12}{'optimizer':>12}")
+    print("-" * 54)
+    if net is not None:
+        _, net_load_mse = load_track_err(net)
+        print(f"{'load track MSE (m^2)':<30}{net_load_mse:>12.5f}{opt_load_mse:>12.5f}")
+        print(f"{'load track RMSE (m)':<30}{np.sqrt(net_load_mse):>12.5f}{np.sqrt(opt_load_mse):>12.5f}")
+        print(f"{'load track max (m)':<30}{net['track_max']:>12.5f}{opt['track_max']:>12.5f}")
+        cmag, cmse, cmse_all = carrier_dev(net, opt)
+        print(f"\n{'carrier vs OPTIMIZER (ref)':<30}{'MSE (m^2)':>12}")
+        for i in range(N):
+            print(f"  {'drone '+str(i+1):<28}{cmse[i]:>12.5f}")
+        print(f"  {'ALL drones':<28}{cmse_all:>12.5f}   (RMSE {np.sqrt(cmse_all):.4f} m)")
+        lmse = lambda_dev(net, opt)
+        print(f"\n{'lambda vs OPTIMIZER (ref)':<30}{'MSE':>12}")
+        for i in range(N):
+            print(f"  {'drone '+str(i+1):<28}{lmse[i]:>12.5f}")
+        print(f"  {'ALL drones':<28}{float(np.mean(lmse)):>12.5f}")
+    else:
+        print(f"{'load track MSE (m^2)':<30}{'—':>12}{opt_load_mse:>12.5f}")
+        print(f"{'load track RMSE (m)':<30}{'—':>12}{np.sqrt(opt_load_mse):>12.5f}")
+
+
 def plot_compare(net, opt, title=""):
     """Overlay net (solid) vs optimizer (dashed). net may be None (optimizer-only survey)."""
     t = opt["t"]; sfx = f" — {title}" if title else ""
@@ -142,6 +221,30 @@ def plot_compare(net, opt, title=""):
     # 0b. load ORIENTATION roll/pitch/yaw (deg) — reference vs actual
     _tracking_panels(t, opt["rot_ref"], net["rot"] if have_net else None, opt["rot"],
                      ["roll", "pitch", "yaw"], "deg", "Load orientation — ref vs actual" + sfx)
+
+    # 0c. LOAD TRACKING ERROR magnitude ||load - ref|| over time (net vs optimizer) + mean lines.
+    plt.figure(figsize=(11, 4.5))
+    om, omse = load_track_err(opt)
+    plt.plot(t, om, "C3", lw=1.2, ls="--", alpha=0.85, label=f"optimizer (MSE {omse:.4f})")
+    plt.axhline(om.mean(), c="C3", ls=":", lw=1.0, alpha=0.6)
+    if have_net:
+        nm, nmse = load_track_err(net)
+        plt.plot(t[:len(nm)], nm, "C0", lw=1.4, label=f"net (MSE {nmse:.4f})")
+        plt.axhline(nm.mean(), c="C0", ls=":", lw=1.0, alpha=0.6)
+    plt.xlabel("Time (s)"); plt.ylabel("‖load − ref‖ (m)")
+    plt.title("Load tracking error over time" + sfx)
+    plt.legend(fontsize=9); plt.grid(True)
+
+    # 0d. CARRIER deviation from the OPTIMIZER (expert) per drone over time — where the net's drones drift.
+    if have_net:
+        cmag, cmse, cmse_all = carrier_dev(net, opt)
+        plt.figure(figsize=(11, 4.5))
+        for i in range(N):
+            plt.plot(t[:len(cmag[i])], cmag[i], color=f"C{i}", lw=1.3,
+                     label=f"drone {i+1} (MSE {cmse[i]:.4f})")
+        plt.xlabel("Time (s)"); plt.ylabel("‖net − opt‖ carrier pos (m)")
+        plt.title(f"Carrier deviation from optimizer  (all-drone MSE {cmse_all:.4f} m²)" + sfx)
+        plt.legend(fontsize=8); plt.grid(True)
 
     # 1. drone velocity norms: PLANT speed (net solid, opt dashed) + epsilon floor.
     plt.figure(figsize=(11, 5.5))
@@ -200,7 +303,17 @@ def plot_compare(net, opt, title=""):
 def main():
     t_end = T_END
     title = f"held-out #{HELD_IDX}"
-    if SHOWCASE is not None:
+    if USE_MOVE:
+        d = np.asarray(MOVE_DIR, float)
+        d = d / (np.linalg.norm(d) + 1e-12)
+        pos_delta = MOVE_MAG * d
+        traj = make_quintic_pose(pos_delta, np.zeros(3), ramp=MOVE_RAMP,
+                                 hold=HOLD, base_pos=np.asarray(BASE_POS, float))
+        t_end = HOLD + MOVE_RAMP + MOVE_MARGIN
+        title = f"move {np.round(MOVE_DIR, 2)}·{MOVE_MAG:g}m  ramp {MOVE_RAMP:g}s"
+        print(f"QUINTIC MOVE: dir {np.round(d, 3)} · {MOVE_MAG:g} m = dpos {np.round(pos_delta, 2)}  "
+              f"ramp {MOVE_RAMP:g}s  t_end {t_end:.0f}s\n")
+    elif SHOWCASE is not None:
         label, traj, t_end = showcase_set(SHOWCASE, SHOWCASE_M)[SHOWCASE_IDX]
         title = f"{label}  (t_end={t_end:.0f}s)"
         print(f"SHOWCASE '{SHOWCASE}' [{SHOWCASE_IDX}] -> {label}   t_end={t_end:.0f}s\n")
@@ -217,6 +330,9 @@ def main():
         traj, p = heldout_set(HELD_IDX + 1)[HELD_IDX]
         print(f"held-out #{HELD_IDX}: dpos={np.round(p['pos_delta'], 2)} "
               f"drot(deg)={np.round(np.rad2deg(p['rot_delta']), 1)}\n")
+
+    if not USE_MOVE:                       # title shows the actual MOVE (dir·mag), not the bare label
+        title = f"{move_descr(traj, t_end)}  (t_end {t_end:.0f}s)"
 
     env = FMUPlantEnv(n_carriers=N, step_size=DT, end_time=t_end)
     env.reset()
@@ -250,6 +366,8 @@ def main():
           f"{'BINDS' if vRi_closest <= EPS + 1e-3 else 'slack, never binds'})")
     print(f"solver pinned to UPPER bound (+delta): xi {100*pin_xi:.0f}% of steps, A {100*pin_A:.0f}%")
     print(f"xi {opt['xi'][0]:.2f} -> {opt['xi'][-1]:.2f}   A {opt['A'][0]:.2f} -> {opt['A'][-1]:.2f}")
+
+    print_metrics(net, opt)
 
     plot_compare(net, opt, title=title)
     plt.show()

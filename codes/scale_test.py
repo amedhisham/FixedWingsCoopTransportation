@@ -20,15 +20,15 @@ from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo_r4base_wide.pt"          # change to the policy you want to test
-SCALES = [5.0]      # +x displacement (m)
+CKPT = "residual_mappo.pt"          # change to the policy you want to test
+SCALES = [7.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
-RAMP = 16.0                          # quintic move duration (s)
-END_TIME = HOLD + RAMP + 1        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
+RAMP = 23.0                          # quintic move duration (s)
+END_TIME = HOLD + RAMP + 2        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
 DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (0.0, 1.0, 0.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
-USE_CUSTOM = True                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
+MOVE_DIR = (1.0, -1.0, 0.3)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+USE_CUSTOM = False                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
 CUSTOM_IDX = 0                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
                                      #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
@@ -56,6 +56,7 @@ def roll(env, actor, om, os_, traj, dpos, use_policy, record=False):
     agents = env.possible_agents
     n = env.n
     loop, load, satl, satw = [], [], [], []
+    loopsq, loadsq = [], []                       # squared per-step errors -> MSE (m^2) for comparisons
     hist = {"t": [], "load": [], "dpos": [], "dvel": []} if record else None
     k, blew = 0, False
     blow_t = blow_loadoff = blow_vmax = None
@@ -91,9 +92,12 @@ def roll(env, actor, om, os_, traj, dpos, use_policy, record=False):
             continue
         loop.append(np.mean([infos[a]["loop_dist"] for a in agents]))
         load.append(np.mean([infos[a]["load_err"] for a in agents]))
+        loopsq.append(np.mean([infos[a]["loop_dist"] ** 2 for a in agents]))   # per-drone squared -> MSE
+        loadsq.append(np.mean([infos[a]["load_err"] ** 2 for a in agents]))
         satl.append(np.mean([infos[a]["sat_lam"] for a in agents]))
         satw.append(np.mean([infos[a]["sat_w"] for a in agents]))
-    m = (np.mean(loop), np.mean(load), np.mean(satl), np.mean(satw)) if loop else (np.nan,) * 4
+    m = ((np.mean(loop), np.mean(load), np.mean(loopsq), np.mean(loadsq), np.mean(satl), np.mean(satw))
+         if loop else (np.nan,) * 6)
     return m + (blew, blow_loadoff, blow_vmax, blow_t), hist
 
 
@@ -163,11 +167,12 @@ def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
 
 
 def fmt(m):
-    if not m[4]:
-        return f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>9.2f}{m[3]:>8.2f}"
-    if m[5] is None:
+    # m = (loop, load, loopMSE, loadMSE, sat_lam, sat_w, blew, blow_loadoff, blow_vmax, blow_t)
+    if not m[6]:
+        return f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>10.4f}{m[3]:>10.4f}{m[4]:>9.2f}{m[5]:>8.2f}"
+    if m[7] is None:
         return "   -- BLEW UP (NaN) --"
-    return f"   BLEW @ {m[7]:.1f}s  load {m[5]:.2f}m off  vmax {m[6]:.0f} m/s"
+    return f"   BLEW @ {m[9]:.1f}s  load {m[7]:.2f}m off  vmax {m[8]:.0f} m/s"
 
 
 def main():
@@ -195,12 +200,12 @@ def main():
         name = custom_set()[CUSTOM_IDX][1]["name"]
         print(f"scale test  ckpt={CKPT}  CUSTOM[{CUSTOM_IDX}]={name}  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
               f"  (mean over episode, GRACE-skipped)\n")
-        print(f"{'traj':<9}{'mode':<8}{'loop':>8}{'load':>8}{'sat_lam':>9}{'sat_w':>8}")
+        print(f"{'traj':<9}{'mode':<8}{'loop':>8}{'load':>8}{'loopMSE':>10}{'loadMSE':>10}{'sat_lam':>9}{'sat_w':>8}")
         run_one(ctraj, dpos, name, f"custom[{CUSTOM_IDX}] {name}", do_plot=True)
     else:
         print(f"scale test  ckpt={CKPT}  dir={MOVE_DIR}  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
               f"  (mean over episode, GRACE-skipped)\n")
-        print(f"{'move(m)':<9}{'mode':<8}{'loop':>8}{'load':>8}{'sat_lam':>9}{'sat_w':>8}")
+        print(f"{'move(m)':<9}{'mode':<8}{'loop':>8}{'load':>8}{'loopMSE':>10}{'loadMSE':>10}{'sat_lam':>9}{'sat_w':>8}")
         for s in SCALES:
             traj = make_quintic_pose(np.array(MOVE_DIR, float) * s, np.zeros(3), RAMP, HOLD, np.asarray(BASE_POS, float))
             dpos, _, _ = expert_path(traj, END_TIME)

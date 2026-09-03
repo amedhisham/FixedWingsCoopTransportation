@@ -1,0 +1,92 @@
+QUINTIC MOVE: dir [-0.06 -0.88 -0.47] · 3 m = dpos [-0.18 -2.64 -1.41]  ramp 50s  t_end 54s
+
+running net (with in-loop EMA) ...
+running optimizer (CasADi) ...
+
+            track_mean  track_max    vmin
+        net     0.0044     0.0151   0.000
+  optimizer     0.0044     0.0151   0.000
+
+xi 2.00 -> 2.00   A 1.20 -> 1.20
+
+metric                                 net   optimizer
+------------------------------------------------------
+load track MSE (m^2)               0.00002     0.00002
+load track RMSE (m)                0.00493     0.00493
+load track max (m)                 0.01505     0.01505
+
+carrier vs OPTIMIZER (ref)       MSE (m^2)
+  drone 1                          0.00015
+  drone 2                          0.00015
+  drone 4                          0.00015
+  ALL drones                       0.00015   (RMSE 0.0123 m)
+
+lambda vs OPTIMIZER (ref)              MSE
+  drone 1                          0.00035
+  drone 2                          0.00039
+  drone 3                          0.00035
+  drone 4                          0.00039
+  ALL drones                       0.00037
+(.venv) PS D:\Masters\Internship and Thesis prep\FixedWingsCoopTransportation\codes> python deploy_compare.py
+QUINTIC MOVE: dir [-0.06 -0.88 -0.47] · 3 m = dpos [-0.18 -2.64 -1.41]  ramp 16s  t_end 20s
+
+running net (with in-loop EMA) ...
+running optimizer (CasADi) ...
+
+            track_mean  track_max    vmin
+        net     0.0239     0.0437   0.000
+  optimizer     0.0239     0.0437   0.000
+
+xi 2.00 -> 2.00   A 1.20 -> 1.20
+
+metric                                 net   optimizer
+------------------------------------------------------
+load track MSE (m^2)               0.00075     0.00075
+load track RMSE (m)                0.02744     0.02744
+load track max (m)                 0.04371     0.04371
+
+carrier vs OPTIMIZER (ref)       MSE (m^2)
+  drone 1                          0.00011
+  drone 2                          0.00011
+  drone 3                          0.00011
+  drone 4                          0.00011
+  ALL drones                       0.00011   (RMSE 0.0106 m)
+
+lambda vs OPTIMIZER (ref)              MSE
+  drone 1                          0.00028
+  drone 2                          0.00030
+  drone 3                          0.00028
+  drone 4                          0.00030
+  ALL drones                       0.00029
+
+
+SHOWCASE 'long' [0] -> long_line   t_end=35s
+
+
+            track_mean  track_max    vmin
+        net     0.0613     0.3868   0.000
+  optimizer     0.0613     0.3868   0.000
+
+
+
+xi 2.00 -> 2.13   A 1.20 -> 1.26
+
+metric                                 net   optimizer
+------------------------------------------------------
+load track MSE (m^2)               0.00961     0.00961
+load track RMSE (m)                0.09801     0.09801
+load track max (m)                 0.38677     0.38677
+
+carrier vs OPTIMIZER (ref)       MSE (m^2)
+  drone 1                          0.00029
+  drone 2                          0.00028
+  drone 3                          0.00028
+  drone 4                          0.00029
+  ALL drones                       0.00029   (RMSE 0.0169 m)
+
+lambda vs OPTIMIZER (ref)              MSE
+  drone 1                          0.00089
+  drone 2                          0.00091
+  drone 3                          0.00089
+  drone 4                          0.00091
+  ALL drones                       0.00090
