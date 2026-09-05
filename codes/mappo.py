@@ -25,7 +25,7 @@ from residual_marl_env import ResidualMARLEnv
 from networks import Actor, Critic
 from expert_reference import training_pairs, eval_scenarios, expert_path
 from collect_il_data import T_END          # 35 s — the horizon the trajectories + expert refs span
-from controller import make_quintic_pose
+from controller import make_quintic_pose, get_reference_trajectory
 from trajectories import BASE_POS, HOLD
 
 # --- desync spec (training distribution; matches the plan) ---
@@ -66,11 +66,10 @@ OVERFIT = True
 # feasible as-is; RATCHET MIX_SCALE up once loops settle. Each direction is a rest-to-rest quintic (gentle
 # 5th-order, ramp MIX_RAMP) rolled to the SHORT move-horizon (HOLD+RAMP+margin) — no wasted static-hold tail.
 MIX_DIRS = [                           # (label, unit move direction). scale via MIX_SCALE.
-    ("+x",     (1.0,  0.0,  0.0)),
-    ("+y",     (0.0,  1.0,  0.0)),
-    ("+x-y+z", (1.0, -1.0,  0.5)),
+    # CURRICULUM: solve ONE on the FULL batch first (no batch-splitting), save, then re-add the second
+    # and WARM-START the 2-traj from the solved net (they co-learn -> the 2nd comes up fast).
     ("+x+y+z", (1.0,  1.0,  0.5)),
-    ("+x+y-z", (1.0,  1.0, -0.5)),
+    # ("+x+y-z", (1.0,  1.0, -0.5)),   # <- re-enable for the 2-traj phase (warm-start from the +x+y+z solve)
 ]
 MIX_SCALE = 5.0                        # displacement magnitude (m) along each dir. DROP if any member blows.
 MIX_RAMP = 16.0                        # quintic move duration (s); gentle.
@@ -88,7 +87,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 120                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
 STEPS_PER_ITER = 36000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
@@ -98,7 +97,7 @@ MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N ag
 GAMMA = 0.99
 LAMBDA = 0.95
 CLIP = 0.2
-LR_ACTOR = 3e-4
+LR_ACTOR = 6e-4
 LR_CRITIC = 1e-3
 ENT_COEF = 2e-3               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
                              #   forced ENT_COEF>0 was a REGIME-4 artifact of the JERK term (its penalty was
@@ -256,18 +255,25 @@ def eval_policy(env, actor, om, os_, scenarios):
 
 def critic_input(env):
     """PRIVILEGED critic state (CTDE, training-only): true global state (42) + the per-drone
-    delay vector (n), 0-centered + the per-drone TIME-INDEXED expert TARGET (3n).
+    delay vector (n), 0-centered + the per-drone TIME-INDEXED expert TARGET (3n) + the DESIRED
+    LOAD STATE (18: p_d, R_d(9), v_d, omega_d).
     The delays are a FIXED per-episode scenario parameter the decentralized actor never sees;
     giving them to the critic lets its value baseline explain away the scenario's difficulty.
     The TARGET is the crux for MULTI-TRAJECTORY: the reward is dominated by ||target - pos||^2,
     but state() alone can't say WHICH trajectory (the same load config maps to 56 different
     targets) -> V collapses -> the advantage is swamped by the traj DRAW, not the action. Handing
-    V the phase-correct target (which it can difference against the drone positions in state())
-    makes the value trajectory-aware, so the advantage isolates the ACTION. Training-only -> OK."""
+    V the phase-correct target makes the value trajectory-aware, so the advantage isolates the ACTION.
+    The DESIRED LOAD STATE is the REFERENCE side of the load-tracking penalty: carrier targets alone
+    do NOT determine the load reference (cable-suspended -> forward kinematics is swing-DOF ambiguous),
+    so give the critic p_d directly (paired with the true load in state()) instead of making it infer
+    p_d from the formation. Training-only -> OK."""
     d = env.ctrl_delay.astype(np.float32) - float(np.mean(DELAY_CHOICES))
     idx = min(env._step, env.expert_pos.shape[1] - 1)          # current phase -> expert target point
     tgt = env.expert_pos[:, idx, :].reshape(-1).astype(np.float32)   # (3n,) per-drone target
-    return np.concatenate([env.state().astype(np.float32), d, tgt])
+    pd, vd, Rd, wd = get_reference_trajectory(env.t, env.traj)       # DESIRED load state at the true phase
+    ref = np.concatenate([np.asarray(pd, float), np.asarray(Rd, float).flatten(order="C"),
+                          np.asarray(vd, float), np.asarray(wd, float)]).astype(np.float32)   # (18,)
+    return np.concatenate([env.state().astype(np.float32), d, tgt, ref])
 
 
 def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
