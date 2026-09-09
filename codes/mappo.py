@@ -87,7 +87,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 100                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 8                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
 STEPS_PER_ITER = 36000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
@@ -115,11 +115,11 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-NUM_WORKERS = 2                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
+NUM_WORKERS = 3                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
                                       #   Pool of persistent workers (parallel_collect.py), each with its own
                                       #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
                                       #   Start at 2, raise toward core count (6 here; many more on HPC).
-WARMSTART = "residual_mappo_overfit_xyz_1trj_ch2.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
@@ -375,14 +375,25 @@ def collect_chunk(env, actor, om, os_, pairs, n_anchor, n_steps, rng):
             ep_rews, ep_loops, n_blowups)
 
 
-def build_pairs():
-    """Rebuild (pairs, n_anchor) for the CURRENT config — used by worker processes (parallel_collect) so
-    each worker constructs the SAME training trajectory set main uses, without pickling traj callables."""
+def build_pairs(dpos_list=None):
+    """(pairs, n_anchor) for the CURRENT config — used by worker processes (parallel_collect) so each
+    worker constructs the SAME trajectory set main uses WITHOUT pickling traj callables.
+    If `dpos_list` is given (the expert dpos arrays, picklable, computed ONCE in main and shipped to the
+    workers), REUSE it and rebuild only the CHEAP traj closures -> skips the per-worker redundant CasADi
+    rollout (OVERFIT) / npz load (TRAJ_RANDOMIZE). dpos_list=None -> full build (main / sequential path)."""
     if OVERFIT:
-        pairs, _ = overfit_set()
-        return pairs, len(pairs)
+        trajs = [make_quintic_pose(MIX_SCALE * np.asarray(d, float), np.zeros(3), ramp=MIX_RAMP,
+                                   hold=HOLD, base_pos=np.asarray(BASE_POS, float)) for _, d in MIX_DIRS]
+        if dpos_list is None:
+            dpos_list = [expert_path(t, OVERFIT_END)[0] for t in trajs]   # CasADi — MAIN only
+        return list(zip(trajs, dpos_list)), len(trajs)
     if TRAJ_RANDOMIZE:
-        return training_pairs()
+        if dpos_list is None:
+            return training_pairs()
+        from expert_reference import custom_set, train_set, N_TRAJ       # cheap closures (no CasADi)
+        anchors = [tr for tr, _ in custom_set()]
+        trajs = anchors + [tr for tr, _ in train_set(N_TRAJ)]
+        return list(zip(trajs, dpos_list)), len(anchors)
     return None, 0
 
 
@@ -468,7 +479,8 @@ def main():
         from parallel_collect import ParallelCollector
         env_kwargs = dict(**DESYNC, disable_dw=DISABLE_DW, end_time=end_time,
                           track_clean_lambda=(CONSIST_W > 0 or CONSIST_LAM_W > 0))
-        collector = ParallelCollector(NUM_WORKERS, env_kwargs, obs_dim, act_dim, HIDDEN)
+        dpos_list = [dpos for _, dpos in pairs] if pairs else None    # ship dpos ONCE -> no per-worker CasADi
+        collector = ParallelCollector(NUM_WORKERS, env_kwargs, obs_dim, act_dim, HIDDEN, dpos_list)
         print(f"PARALLEL collection: {NUM_WORKERS} worker processes "
               f"(~{STEPS_PER_ITER // NUM_WORKERS} steps each)")
 

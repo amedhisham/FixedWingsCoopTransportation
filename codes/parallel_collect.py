@@ -27,8 +27,10 @@ import torch
 _G = {}   # per-worker-process globals (persist across Pool tasks)
 
 
-def _init(env_kwargs, obs_dim, act_dim, hidden):
-    """Runs ONCE per worker process: build the FMU env, the trajectory set, and an actor shell."""
+def _init(env_kwargs, obs_dim, act_dim, hidden, dpos_list):
+    """Runs ONCE per worker process: build the FMU env, the trajectory set, and an actor shell.
+    dpos_list = the expert dpos arrays computed ONCE in main -> workers rebuild only the cheap traj
+    closures and reuse these, skipping a redundant per-worker CasADi rollout."""
     import mappo
     from residual_marl_env import ResidualMARLEnv
     from networks import Actor
@@ -36,7 +38,7 @@ def _init(env_kwargs, obs_dim, act_dim, hidden):
     env = ResidualMARLEnv(**env_kwargs)
     env.reset(seed=1000 + (os.getpid() % 30000))
     env.default_expert_pos = env.expert_pos.copy()  # non-TRAJ_RANDOMIZE fallback ref (matches main)
-    pairs, n_anchor = mappo.build_pairs()          # rebuild the SAME (traj, dpos) set — no pickled callables
+    pairs, n_anchor = mappo.build_pairs(dpos_list)  # cheap closures + shipped dpos -> no per-worker CasADi
     actor = Actor(obs_dim=obs_dim, act_dim=act_dim, hidden=hidden)
     actor.eval()
     _G.update(env=env, pairs=pairs, n_anchor=n_anchor, actor=actor)
@@ -65,12 +67,12 @@ def _merge(results):
 class ParallelCollector:
     """Persistent Pool of rollout workers. Same output tuple as mappo.collect_chunk (minus value)."""
 
-    def __init__(self, num_workers, env_kwargs, obs_dim, act_dim, hidden):
+    def __init__(self, num_workers, env_kwargs, obs_dim, act_dim, hidden, dpos_list):
         import multiprocessing as mp
         self.n = int(num_workers)
         ctx = mp.get_context("spawn")
         self.pool = ctx.Pool(self.n, initializer=_init,
-                             initargs=(env_kwargs, obs_dim, act_dim, tuple(hidden)))
+                             initargs=(env_kwargs, obs_dim, act_dim, tuple(hidden), dpos_list))
 
     def collect(self, actor, om, os_, total_steps, base_seed):
         sd = {k: v.detach().cpu() for k, v in actor.state_dict().items()}
