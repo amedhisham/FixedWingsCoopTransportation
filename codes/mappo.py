@@ -115,6 +115,10 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
+NUM_WORKERS = 2                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
+                                      #   Pool of persistent workers (parallel_collect.py), each with its own
+                                      #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
+                                      #   Start at 2, raise toward core count (6 here; many more on HPC).
 WARMSTART = "residual_mappo_overfit_xyz_1trj_ch2.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
@@ -276,14 +280,16 @@ def critic_input(env):
     return np.concatenate([env.state().astype(np.float32), d, tgt, ref])
 
 
-def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
-    """Roll whole episodes until >= n_steps. Returns per-STEP buffers (obs has an N axis).
-    Actor sees NORMALIZED obs ((obs-om)/os_); raw obs are stored (re-normalized in update).
-    `pairs` = [(traj, expert_dpos)] training set; per episode we sample one (multi-traj). The FIRST
-    GUARANTEE_ANCHOR episodes are drawn from the NON-quintic anchors (pairs[:n_anchor]) so every iter
-    sees the default line + solver-engaging customs (like F1's collect), the rest from all 56."""
+def collect_chunk(env, actor, om, os_, pairs, n_anchor, n_steps, rng):
+    """Roll whole episodes until >= n_steps. Returns per-STEP buffers (obs has an N axis), WITHOUT the
+    critic value: value is computed batched in main() from state_b (equivalent — the critic is frozen
+    during collection). This lets collection run in WORKER PROCESSES carrying only the actor + env
+    (see parallel_collect.py). ep_rews/ep_loops are per-EPISODE lists (merged across workers, meaned
+    in main). Actor sees NORMALIZED obs; raw obs are stored (re-normalized in update).
+    `pairs` = [(traj, expert_dpos)]; per episode sample one (multi-traj). The FIRST GUARANTEE_ANCHOR
+    episodes are drawn from the NON-quintic anchors (pairs[:n_anchor])."""
     obs_b, act_b, logp_b = [], [], []      # per step, shape (N, .)
-    state_b, val_b, rew_b, done_b = [], [], [], []
+    state_b, rew_b, done_b = [], [], []
     dwstar_b = []                          # per step (N,6): dw-consistency target = clip(w_clean-w_base, cap_w)
     dlamstar_b = []                        # per step (N,N): dlam-consistency target = clip(lam_clean-lam_base, cap_lam)
     ep_rews, ep_loops = [], []
@@ -309,19 +315,18 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
         ep_r, ep_loop = 0.0, []
         while env.agents:
             obs_arr = np.stack([obs[a] for a in agents]).astype(np.float32)     # (N,30)
-            state = critic_input(env)                                          # (42+n,) privileged
+            state = critic_input(env)                                          # privileged (value computed in main)
             with torch.no_grad():
                 obs_n = ((obs_arr - om) / os_).astype(np.float32)
                 dist = actor.distribution(torch.tensor(obs_n, device=DEVICE))
                 action = dist.sample()
                 logp = dist.log_prob(action).sum(-1)                          # (N,)
-                value = float(critic(torch.tensor(state, device=DEVICE)))
             action = action.cpu().numpy(); logp = logp.cpu().numpy()
             acts = {a: action[i] for i, a in enumerate(agents)}
             nobs, rewards, term, trunc, infos = env.step(acts)
 
             obs_b.append(obs_arr); act_b.append(action); logp_b.append(logp)
-            state_b.append(state); val_b.append(value)
+            state_b.append(state)
             # dw-consistency TARGET (privileged, train-only): pull each drone's noisy wrench toward the
             # TRUE-state shared wrench, clipped to the SAME cap the env applies (so we regress to the ACHIEVABLE
             # correction). env._wd_clean/_wd_base set this step by the clean replica (track_clean_lambda=True).
@@ -363,11 +368,22 @@ def collect(env, actor, critic, n_steps, rng, om, os_, pairs, n_anchor):
         ep_i += 1
 
     return (np.array(obs_b), np.array(act_b), np.array(logp_b),
-            np.array(state_b, dtype=np.float32), np.array(val_b, dtype=np.float32),
+            np.array(state_b, dtype=np.float32),
             np.array(rew_b, dtype=np.float32), np.array(done_b, dtype=np.float32),
             np.array(dwstar_b, dtype=np.float32),
             np.array(dlamstar_b, dtype=np.float32),
-            np.mean(ep_rews), np.mean(ep_loops), n_blowups)
+            ep_rews, ep_loops, n_blowups)
+
+
+def build_pairs():
+    """Rebuild (pairs, n_anchor) for the CURRENT config — used by worker processes (parallel_collect) so
+    each worker constructs the SAME training trajectory set main uses, without pickling traj callables."""
+    if OVERFIT:
+        pairs, _ = overfit_set()
+        return pairs, len(pairs)
+    if TRAJ_RANDOMIZE:
+        return training_pairs()
+    return None, 0
 
 
 def overfit_set():
@@ -447,13 +463,31 @@ def main():
                     "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,
                     "hidden": list(HIDDEN), "best_reward": best}, path)   # self-describing width (loaders infer anyway)
 
+    collector = None
+    if NUM_WORKERS > 1:
+        from parallel_collect import ParallelCollector
+        env_kwargs = dict(**DESYNC, disable_dw=DISABLE_DW, end_time=end_time,
+                          track_clean_lambda=(CONSIST_W > 0 or CONSIST_LAM_W > 0))
+        collector = ParallelCollector(NUM_WORKERS, env_kwargs, obs_dim, act_dim, HIDDEN)
+        print(f"PARALLEL collection: {NUM_WORKERS} worker processes "
+              f"(~{STEPS_PER_ITER // NUM_WORKERS} steps each)")
+
     it = 0
     try:
       for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
-        (obs_b, act_b, logp_b, state_b, val_b, rew_b, done_b, dwstar_b, dlamstar_b,
-         mean_ep_r, mean_loop, n_blowups) = collect(env, actor, critic, STEPS_PER_ITER, rng, om, os_,
-                                                     pairs, n_anchor)
+        if collector is not None:                          # PARALLEL: workers roll chunks (actor-only)
+            (obs_b, act_b, logp_b, state_b, rew_b, done_b, dwstar_b, dlamstar_b,
+             ep_rews, ep_loops, n_blowups) = collector.collect(actor, om, os_, STEPS_PER_ITER,
+                                                               base_seed=int(rng.integers(1 << 30)))
+        else:                                              # SEQUENTIAL: in-process rollout
+            (obs_b, act_b, logp_b, state_b, rew_b, done_b, dwstar_b, dlamstar_b,
+             ep_rews, ep_loops, n_blowups) = collect_chunk(env, actor, om, os_, pairs, n_anchor,
+                                                           STEPS_PER_ITER, rng)
+        mean_ep_r, mean_loop = float(np.mean(ep_rews)), float(np.mean(ep_loops))
+        # critic value at COLLECTION time (frozen critic -> batched forward == per-step during rollout)
+        with torch.no_grad():
+            val_b = critic(torch.tensor(state_b, device=DEVICE)).cpu().numpy().astype(np.float32)   # (T,)
 
         T = len(rew_b)
         advs = np.zeros((T, N), np.float32); rets = np.zeros((T, N), np.float32)
@@ -533,6 +567,8 @@ def main():
         print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
 
     save_ckpt("residual_mappo_overfit_last.pt" if OVERFIT else "residual_mappo_last.pt", best_reward)   # LATEST resumable state
+    if collector is not None:
+        collector.close()
     env.close()
     print(f"best (deploy) -> residual_mappo.pt (BEST DET_R {best_reward:.3f});  resume -> residual_mappo_last.pt")
 
