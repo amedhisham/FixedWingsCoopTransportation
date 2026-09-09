@@ -5,10 +5,16 @@ metadata:
   node_type: memory
   type: project
   originSessionId: e49cf5f7-ad57-4237-adbd-51d78f2ea4a7
-  modified: 2026-09-09T14:02:40.885Z
+  modified: 2026-09-09T19:44:09.694Z
 ---
 
-**GOAL: move F2 MAPPO training to uni HPC for real (10-30x) speedup.** The parallel-collection prereq is DONE (2026-09-09): `parallel_collect.py` (multiprocessing Pool, per-worker FMU env, actor-only `collect_chunk`, value batched in `main`), `NUM_WORKERS` flag in mappo.py, smoke-tested. See [[f2-slide-fix-todo]] for the diagram that went stale from that refactor. INFRA context in [[f2-residual-rl-plan]] ("build worker-pool as SLURM prereq" — now built).
+**GOAL: move F2 MAPPO training to uni HPC for real speedup.** The parallel-collection prereq is DONE (2026-09-09): `parallel_collect.py` (multiprocessing Pool, per-worker FMU env, actor-only `collect_chunk`, value batched in `main`), `NUM_WORKERS` flag in mappo.py. See [[f2-slide-fix-todo]] for the diagram that went stale from that refactor. INFRA context in [[f2-residual-rl-plan]] ("build worker-pool as SLURM prereq" — now built).
+
+**MEASURED (6-core laptop, STEPS_PER_ITER~32k):** iter time by workers: 2w 80s, 3w 70s, 4w 55s, 5w 50s, 6w 43s. Fit `iter ≈ 25 + 111/n` -> **serial floor ~25s (the PPO UPDATE, doesn't parallelize), 1-worker collection ~111s.** Still scaling at 6w -> HPC (16-32 cores) keeps helping toward the ~25s floor (~1.5x more from 6->32). Value-batching refactor also sped BOTH paths (old seq was 195s). Timing split now in the log: `| Xs (coll Y upd Z)`. The 3w dip = WHOLE-EPISODE ROUNDING (episodes 1800 steps) -> on HPC pick STEPS_PER_ITER divisible by `n_workers x 1800`.
+
+**GPU / Isaac verdict (reasoned through 2026-09-09):** DON'T GPU the update — nets are TINY (256x256) so gradient steps are kernel-launch-STARVED on GPU (slower than CPU BLAS); the CPU<->GPU transfer is once/iter and amortized, NOT the issue. GPU only pays if the SIM goes on GPU (Isaac-style thousands of parallel envs) — but that needs REIMPLEMENTING the FMU plant + CasADi expert as GPU tensors (huge, throws away validated physics). AND at CURRENT modest steps/iter you're ~UPDATE-BOUND once cores are plentiful, so GPU sim saves only the residual collection (~marginal). GPU win unlocks ONLY at million-step batches (where update also grows + matmuls saturate the GPU). Verdict: **CPU multiprocessing is optimal for a CPU/FMU plant at current scale.**
+
+**Extra parallel refinements DONE (2026-09-09, in git, user commits):** (a) ship dpos arrays to workers via `build_pairs(dpos_list)` -> NO per-worker CasADi rebuild (was `N_workers x len(MIX_DIRS)` redundant IPOPT rollouts absorbed into iter-1 = the ~97s iter-1); (b) CLEAN Ctrl-C: workers `signal.SIG_IGN`, `ParallelCollector.terminate()` force-kills without join()-hang, pool creation inside the try (old code FROZE the terminal on Ctrl-C -> recover: `taskkill /F /IM python.exe`); (c) coll/upd timing split. Portable memory + `HPC_MIGRATION.md` + `requirements.txt` committed into `codes/claude_memory/` + repo so a fresh Ubuntu Claude has context (RL branch ahead of origin, user pushes).
 
 **Migration is being done ONE STEP AT A TIME (user's call).** Blockers the user named: (1) rebuild venv on Ubuntu, (2) re-export FMU with Linux support, (3) SLURM.
 
