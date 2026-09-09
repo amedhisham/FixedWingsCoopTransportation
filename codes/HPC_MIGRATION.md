@@ -43,16 +43,30 @@ python -c "import torch, numpy, scipy, casadi, fmpy, gymnasium, pettingzoo, matp
 
 ---
 
-## Step 2 — re-export the FMU with Linux support
+## Step 2 — compile the FMU for Linux (NO re-export needed)
 
-The FMU must contain **`binaries/linux64/*.so`** inside the archive. A Windows-only export has just
-`binaries/win64/*.dll` and fmpy cannot instantiate it on Linux.
+`fmu_plant_env.py` loads **`Base_Model.fmu`** by default. Inspected 2026-09-09:
+- Binaries: **`binaries/win64/Base_Model.dll` only** — no `linux64`, so it will NOT load on Ubuntu as-is.
+- Source: **fully included** (`sources/*.c` + headers + `sources/buildDescription.xml`). It's a Simulink /
+  Embedded Coder export (`RTWCG_*`, `tmwtypes.h`, `rtwtypes.h`) → portable, self-contained standard C with
+  no MATLAB runtime dependency.
 
-- Re-export from the modelling tool with Linux binaries enabled, **or** export a **source-code FMU**
-  (compiles on the target, platform-agnostic — avoids re-exporting per OS).
-- Keep the **filename/path** the same as the Windows FMU (or make it a config var) — `fmu_plant_env.py`
-  references a specific file.
-- Verify: `python -c "import fmpy; fmpy.dump('<the_fmu>.fmu')"` should list a `linux64` platform.
+So do NOT re-export from Simulink — just **compile the bundled source into a `linux64` binary on Ubuntu**:
+
+```bash
+sudo apt install -y build-essential                 # C toolchain (or `module load gcc` on HPC)
+python -m fmpy compile Base_Model.fmu               # adds binaries/linux64/Base_Model.so into the .fmu
+```
+
+Then it loads normally (same filename, no code change). Verify before/after:
+```bash
+python -c "import fmpy; fmpy.dump('Base_Model.fmu')"   # should list a linux64 platform after compile
+```
+
+Only residual risk: `fmpy compile` hits a missing symbol/header (unlikely for portable Embedded Coder
+source with a `buildDescription.xml`) — test it early; if it fails, THEN fall back to re-exporting from
+Simulink with Linux binaries. (`Base_Model_three_drones.fmu` is the same situation if ever used — but the
+code uses `Base_Model.fmu`.)
 
 ---
 

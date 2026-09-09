@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: e49cf5f7-ad57-4237-adbd-51d78f2ea4a7
-  modified: 2026-09-09T13:18:06.189Z
+  modified: 2026-09-09T14:02:40.885Z
 ---
 
 **GOAL: move F2 MAPPO training to uni HPC for real (10-30x) speedup.** The parallel-collection prereq is DONE (2026-09-09): `parallel_collect.py` (multiprocessing Pool, per-worker FMU env, actor-only `collect_chunk`, value batched in `main`), `NUM_WORKERS` flag in mappo.py, smoke-tested. See [[f2-slide-fix-todo]] for the diagram that went stale from that refactor. INFRA context in [[f2-residual-rl-plan]] ("build worker-pool as SLURM prereq" — now built).
@@ -14,7 +14,7 @@ metadata:
 
 **STEP 1 — venv on Ubuntu: DONE the prep.** `codes/requirements.txt` generated via pip freeze (45 pkgs). CAVEAT: `torch==2.11.0+cu130` is a CUDA local-tag wheel that won't resolve on plain PyPI/Linux — install torch separately on Ubuntu (CPU build is fine; training is DEVICE="cpu", CPU-bound). Rest (casadi/IPOPT, FMPy, numpy, scipy, gymnasium, pettingzoo, matplotlib) are cross-platform. PIN casadi/IPOPT to the validated version so expert trajectories don't shift.
 
-**STEP 2 (SAVED, not done) — Linux FMU re-export.** The FMU must contain `binaries/linux64/*.so` (a Windows-only FMU has just `win64/*.dll` -> fmpy can't instantiate on Linux). Re-export with Linux binaries, OR emit a SOURCE-code FMU (compiles on target, platform-agnostic). Keep the FMU filename/path the same (or make it a config var) — `fmu_plant_env` references a specific file.
+**STEP 2 (SAVED) — compile the FMU for Linux, NO re-export.** Inspected `Base_Model.fmu` (the one `fmu_plant_env` loads by default) 2026-09-09: binaries = `win64/*.dll` ONLY (won't load on Linux), BUT source is FULLY included (`sources/*.c` + `buildDescription.xml`; Simulink/Embedded Coder RTWCG -> portable self-contained C, no MATLAB runtime). So on Ubuntu just COMPILE it: `sudo apt install build-essential` then `python -m fmpy compile Base_Model.fmu` (adds `binaries/linux64/*.so`, same filename, no code change). Verify: `python -c "import fmpy; fmpy.dump('Base_Model.fmu')"`. Fallback only if compile hits missing symbols: re-export from Simulink with Linux binaries. (three_drones fmu = same, but code uses Base_Model.fmu.)
 
 **STEP 3 (SAVED) — SLURM.** parallel_collect is SINGLE-NODE multiprocessing (shared memory, NOT multi-node) -> request `--nodes=1 --cpus-per-task=<many>`, one fat node. Make `NUM_WORKERS` fall back to `os.environ["SLURM_CPUS_PER_TASK"]` so no per-alloc hand-edit. KEEP mp context = "spawn" (NOT fork: main creates its own FMU env before the Pool; fork would copy that live FMU/IPOPT handle into workers = native-state corruption; spawn re-imports cleanly).
 
