@@ -500,6 +500,7 @@ def main():
         # critic value at COLLECTION time (frozen critic -> batched forward == per-step during rollout)
         with torch.no_grad():
             val_b = critic(torch.tensor(state_b, device=DEVICE)).cpu().numpy().astype(np.float32)   # (T,)
+        t_coll = time.perf_counter() - t0    # COLLECTION time (scales with workers) vs update (serial floor)
 
         T = len(rew_b)
         advs = np.zeros((T, N), np.float32); rets = np.zeros((T, N), np.float32)
@@ -519,6 +520,7 @@ def main():
 
         consist_log = 0.0
         consist_lam_log = 0.0
+        t_upd0 = time.perf_counter()         # start of the SERIAL update phase (PPO epochs)
         for _ in range(EPOCHS):
             idx = rng.permutation(T)
             for s in range(0, T, MINIBATCH_STEPS):
@@ -554,6 +556,7 @@ def main():
                 loss_c = ((v - ret_t[mb]) ** 2).mean()
                 opt_c.zero_grad(); loss_c.backward()
                 nn.utils.clip_grad_norm_(critic.parameters(), MAX_GRAD); opt_c.step()
+        t_update = time.perf_counter() - t_upd0   # SERIAL update phase (doesn't parallelize -> the floor)
 
         dt = time.perf_counter() - t0
         hist_R.append(mean_ep_r); hist_loop.append(mean_loop)
@@ -574,7 +577,8 @@ def main():
                 det_str += f"  (new best {best_reward:.3f} -> saved)"
         blow_str = f"  blowups {n_blowups}" if n_blowups else ""
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
-              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
+              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  ent {ent.item():.3f}{blow_str}  "
+              f"| {dt:.1f}s (coll {t_coll:.1f} upd {t_update:.1f})")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> terminating workers + saving resume checkpoint")
         if collector is not None:
