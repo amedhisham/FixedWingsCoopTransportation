@@ -89,7 +89,7 @@ EVAL_DELAYS = [2, 2, 2, 2]
 # --- PPO hyperparameters ---
 ITERS = 8                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 36000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
+STEPS_PER_ITER = 32000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
 EPOCHS = 6
@@ -115,7 +115,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-NUM_WORKERS = 3                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
+NUM_WORKERS = 1                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
                                       #   Pool of persistent workers (parallel_collect.py), each with its own
                                       #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
                                       #   Start at 2, raise toward core count (6 here; many more on HPC).
@@ -475,8 +475,10 @@ def main():
                     "hidden": list(HIDDEN), "best_reward": best}, path)   # self-describing width (loaders infer anyway)
 
     collector = None
-    if NUM_WORKERS > 1:
-        from parallel_collect import ParallelCollector
+    it = 0
+    try:
+      if NUM_WORKERS > 1:                 # spawn the pool INSIDE the try so a Ctrl-C during worker startup
+        from parallel_collect import ParallelCollector   # (import torch etc.) is caught + terminated cleanly
         env_kwargs = dict(**DESYNC, disable_dw=DISABLE_DW, end_time=end_time,
                           track_clean_lambda=(CONSIST_W > 0 or CONSIST_LAM_W > 0))
         dpos_list = [dpos for _, dpos in pairs] if pairs else None    # ship dpos ONCE -> no per-worker CasADi
@@ -484,8 +486,6 @@ def main():
         print(f"PARALLEL collection: {NUM_WORKERS} worker processes "
               f"(~{STEPS_PER_ITER // NUM_WORKERS} steps each)")
 
-    it = 0
-    try:
       for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
         if collector is not None:                          # PARALLEL: workers roll chunks (actor-only)
@@ -576,7 +576,10 @@ def main():
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
               f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  ent {ent.item():.3f}{blow_str}  | {dt:.1f}s")
     except KeyboardInterrupt:
-        print(f"\n[interrupted at iter {it}] -> saving resume checkpoint")
+        print(f"\n[interrupted at iter {it}] -> terminating workers + saving resume checkpoint")
+        if collector is not None:
+            collector.terminate()     # force-kill workers NOW (don't fall through to close()'s join -> hang)
+            collector = None
 
     save_ckpt("residual_mappo_overfit_last.pt" if OVERFIT else "residual_mappo_last.pt", best_reward)   # LATEST resumable state
     if collector is not None:

@@ -31,6 +31,10 @@ def _init(env_kwargs, obs_dim, act_dim, hidden, dpos_list):
     """Runs ONCE per worker process: build the FMU env, the trajectory set, and an actor shell.
     dpos_list = the expert dpos arrays computed ONCE in main -> workers rebuild only the cheap traj
     closures and reuse these, skipping a redundant per-worker CasADi rollout."""
+    import signal
+    signal.signal(signal.SIGINT, signal.SIG_IGN)   # workers IGNORE Ctrl-C; main alone handles it and
+    #                                                terminates the pool (else every worker throws
+    #                                                KeyboardInterrupt and the join() cleanup hangs).
     import mappo
     from residual_marl_env import ResidualMARLEnv
     from networks import Actor
@@ -83,4 +87,10 @@ class ParallelCollector:
 
     def close(self):
         self.pool.close()
+        self.pool.join()
+
+    def terminate(self):
+        """Force-kill workers (SIGTERM) WITHOUT waiting — the safe path on Ctrl-C / error, since a hung
+        or mid-import worker would make close()'s join() block forever."""
+        self.pool.terminate()
         self.pool.join()
