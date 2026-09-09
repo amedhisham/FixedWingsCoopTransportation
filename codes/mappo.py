@@ -69,7 +69,7 @@ MIX_DIRS = [                           # (label, unit move direction). scale via
     # CURRICULUM: solve ONE on the FULL batch first (no batch-splitting), save, then re-add the second
     # and WARM-START the 2-traj from the solved net (they co-learn -> the 2nd comes up fast).
     ("+x+y+z", (1.0,  1.0,  0.5)),
-    # ("+x+y-z", (1.0,  1.0, -0.5)),   # <- re-enable for the 2-traj phase (warm-start from the +x+y+z solve)
+    ("+x+y-z", (1.0,  1.0, -0.5)),   # 2-traj phase: added on top of the solved +x+y+z net (warm-started)
 ]
 MIX_SCALE = 5.0                        # displacement magnitude (m) along each dir. DROP if any member blows.
 MIX_RAMP = 16.0                        # quintic move duration (s); gentle.
@@ -87,19 +87,19 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 150                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 100                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
 STEPS_PER_ITER = 36000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 8
+EPOCHS = 6
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
 GAMMA = 0.99
 LAMBDA = 0.95
 CLIP = 0.2
-LR_ACTOR = 6e-4
+LR_ACTOR = 3e-4
 LR_CRITIC = 1e-3
-ENT_COEF = 2e-3               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
+ENT_COEF = 1e-3               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
                              #   forced ENT_COEF>0 was a REGIME-4 artifact of the JERK term (its penalty was
                              #   cheapest to cut by shrinking log_std -> killing exploration). With no jerk,
                              #   nothing pushes entropy down, so 0 works: PPO clip + the Gaussian's natural
@@ -115,7 +115,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-WARMSTART = "residual_mappo_overfit.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_xyz_1trj_ch2.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head

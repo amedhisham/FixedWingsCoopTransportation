@@ -20,14 +20,14 @@ from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo.pt"          # change to the policy you want to test
-SCALES = [5.0]      # +x displacement (m)
+CKPT = "residual_mappo_overfit_xyz_1trj_ch2.pt"          # change to the policy you want to test
+SCALES = [15.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
-RAMP = 16.0                          # quintic move duration (s)
-END_TIME = HOLD + RAMP + 2        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
+RAMP = 48.0                          # quintic move duration (s)
+END_TIME = HOLD + RAMP + 1        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
-DESYNC_ON = False                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (1.0, -1.0, 0.3)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
+MOVE_DIR = (1.0, 1.0, 0.5)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
 USE_CUSTOM = False                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
 CUSTOM_IDX = 0                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
                                      #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.
@@ -96,6 +96,8 @@ def roll(env, actor, om, os_, traj, dpos, use_policy, record=False):
         loadsq.append(np.mean([infos[a]["load_err"] ** 2 for a in agents]))
         satl.append(np.mean([infos[a]["sat_lam"] for a in agents]))
         satw.append(np.mean([infos[a]["sat_w"] for a in agents]))
+    # loop/load/*sq accumulate every step UP TO the blowup (which breaks before appending its own step),
+    # so these means are the EPISODE MEAN UNTIL THE BLOWUP when it blew (or the full-episode mean otherwise).
     m = ((np.mean(loop), np.mean(load), np.mean(loopsq), np.mean(loadsq), np.mean(satl), np.mean(satw))
          if loop else (np.nan,) * 6)
     return m + (blew, blow_loadoff, blow_vmax, blow_t), hist
@@ -172,7 +174,10 @@ def fmt(m):
         return f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>10.4f}{m[3]:>10.4f}{m[4]:>9.2f}{m[5]:>8.2f}"
     if m[7] is None:
         return "   -- BLEW UP (NaN) --"
-    return f"   BLEW @ {m[9]:.1f}s  load {m[7]:.2f}m off  vmax {m[8]:.0f} m/s"
+    # episode MEAN until the blowup (loop/load normal + MSE), then the blowup marker
+    pre = (f"{m[0]:>8.3f}{m[1]:>8.3f}{m[2]:>10.4f}{m[3]:>10.4f}"
+           if np.isfinite(m[0]) else "   (blew within GRACE — no stats)")
+    return pre + f"   BLEW @ {m[9]:.1f}s  load {m[7]:.2f}m off  vmax {m[8]:.0f} m/s"
 
 
 def main():
