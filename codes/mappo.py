@@ -131,7 +131,7 @@ NUM_WORKERS = 8                       # PARALLEL collection: 1 = in-process (seq
                                       #   Pool of persistent workers (parallel_collect.py), each with its own
                                       #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
                                       #   Start at 2, raise toward core count (6 here; many more on HPC).
-WARMSTART = "residual_mappo_overfit.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_xyz_2trj_ch3.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
@@ -477,6 +477,9 @@ def main():
 
     hist_R, hist_loop = [], []
     hist_det_it, hist_det = [], []
+    bnoise_ema = None                        # EMA of the gradient NOISE SCALE (critical batch size); the
+                                             #   single-iter estimate is high-variance -> smooth it.
+    prev_g = None                            # previous iter's full-batch gradient (for cross-iter cosine)
     best_reward = -float("inf")              # RESET each run: reward is comparable only within a fixed
                                              #   reward scheme, so "best since THIS run started" (not carried).
     if WARMSTART:                            # ...but seed it with the WARM-START policy's OWN eval so iter 1
@@ -534,6 +537,46 @@ def main():
         state_t = tt(state_b); adv_t = tt(adv); ret_t = tt(ret_mean)
         dwstar_t = tt(dwstar_b)                                               # (T,N,6) dw consistency target
         dlamstar_t = tt(dlamstar_b)                                           # (T,N,N) dlam consistency target
+
+        # --- gradient NOISE SCALE (McCandlish et al. 2018, arXiv:1812.06162): estimate the CRITICAL batch
+        # size  B_noise = tr(Sigma)/|G|^2  from data-parallel-style sub-gradients. Split the batch into NS
+        # sub-batches; g_i = grad of the on-policy PG surrogate at the COLLECTION policy (ratio~1). Then
+        #   |G_big|^2   = |mean_i g_i|^2      (signal;      B_big   = T*N)
+        #   |G_small|^2 = mean_i |g_i|^2      (signal+noise;B_small = T*N/NS)
+        # The two-batch solve extrapolates 1/B->0 to recover |G|^2 (UNBIASED -> B_big need NOT be huge;
+        # but a single-iter estimate is NOISY -> EMA). Reported in STEPS (/N) to compare to STEPS_PER_ITER:
+        # critB >> steps => noise-limited, raise the batch;  critB << steps => not a batch problem.
+        NS = 8
+        subs = np.array_split(np.arange(T), NS)   # CONTIGUOUS blocks (~whole episodes, ~per-worker draws) NOT
+        #   random steps: steps within an episode are correlated, so a random split makes every sub-batch the
+        #   same episode-blend -> tr(Sigma) underestimated -> critB reads LOW. Contiguous = different
+        #   realizations per sub-batch -> captures the EPISODE-level variance that actually bounces DET_R.
+        g_sum, gsq = None, 0.0
+        for chunk in subs:
+            o = (obs_t[chunk].reshape(-1, obs_dim) - om_t) / os_t
+            a = act_t[chunk].reshape(-1, act_dim)
+            A = adv_t[chunk].reshape(-1)
+            pg = -(A * actor.distribution(o).log_prob(a).sum(-1)).mean()      # policy-gradient surrogate
+            actor.zero_grad(set_to_none=True); pg.backward()
+            g = torch.cat([p.grad.reshape(-1) for p in actor.parameters() if p.grad is not None])
+            g_sum = g.clone() if g_sum is None else g_sum + g
+            gsq += float((g * g).sum())
+        actor.zero_grad(set_to_none=True)                                     # clear before the REAL update
+        g_full = g_sum / NS                                                   # full-batch gradient direction
+        G_big_sq = float(g_full.pow(2).sum())                                 # |mean g_i|^2
+        if prev_g is not None:                                                # CROSS-ITER COSINE: do consecutive
+            den = float(g_full.norm() * prev_g.norm())                        #   updates point the SAME way?
+            gcos = float((g_full * prev_g).sum() / den) if den > 1e-12 else float("nan")
+        else:                                                                 #   ~0 = thrash (noise OR LR overshoot);
+            gcos = float("nan")                                               #   >0 = coherent direction
+        prev_g = g_full.clone()
+        G_small_sq = gsq / NS                                                 # mean |g_i|^2
+        B_small, B_big = (T * N) / NS, float(T * N)
+        G2 = (B_big * G_big_sq - B_small * G_small_sq) / (B_big - B_small)    # est |G|^2 (signal)
+        S = (G_small_sq - G_big_sq) / (1.0 / B_small - 1.0 / B_big)           # est tr(Sigma) (noise)
+        b_noise = (S / G2) if G2 > 1e-12 else float("nan")
+        if np.isfinite(b_noise) and b_noise > 0:
+            bnoise_ema = b_noise if bnoise_ema is None else 0.9 * bnoise_ema + 0.1 * b_noise
 
         consist_log = 0.0
         consist_lam_log = 0.0
@@ -597,9 +640,11 @@ def main():
                 save_ckpt("residual_mappo_overfit.pt" if OVERFIT else "residual_mappo.pt", best_reward)
                 det_str += f"  (new best {best_reward:.3f} -> saved)"
         blow_str = f"  blowups {n_blowups}" if n_blowups else ""
+        bn_str = f"{bnoise_ema / N:.0f}" if bnoise_ema else "n/a"    # critical batch in STEPS (vs STEPS_PER_ITER)
+        bnr = f"{b_noise / N:.0f}" if np.isfinite(b_noise) else "nan"        # RAW per-iter (EMA can hide bounce)
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
-              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  ent {ent.item():.3f}{blow_str}  "
-              f"| {dt:.1f}s (coll {t_coll:.1f} upd {t_update:.1f})")
+              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  critB {bn_str}(raw {bnr})  gcos {gcos:+.2f}  "
+              f"ent {ent.item():.3f}{blow_str}  | {dt:.1f}s (coll {t_coll:.1f} upd {t_update:.1f})")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> terminating workers + saving resume checkpoint")
         if collector is not None:

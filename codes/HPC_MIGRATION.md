@@ -5,7 +5,15 @@ Parallel collection is already implemented (`parallel_collect.py`, `NUM_WORKERS`
 smoke-tested — the FMU step is the bottleneck and is CPU-bound, so it scales ~linearly with cores.
 
 Do the steps **one at a time**; each later step is a no-op on the current Windows run, so it's safe to
-add early. Status: **[1] venv prep done · [2][3][4] pending.**
+add early. Status: **[1] venv prep done · [2][3][4] pending · [5] big-batch config pending.**
+
+> **WHY WE'RE DOING THIS RUN (2026-09-10):** the gradient-noise-scale diagnostic proved F2 residual RL
+> is **deeply noise-limited — critical batch ~MILLIONS of steps vs the 92k we run on the laptop** (see
+> `claude_memory/f2-noise-limited.md`). The 192-core node collects **~2M steps/iter at ~the SAME
+> collection wall-time** the laptop needs for 92k (per-core FMU rate is fixed; 192 workers × ~11.5k ≈
+> 2.2M), landing you right at the critical batch. So this CPU run is expected to solve the **current
+> 2-traj** case cleanly (the GPU migration is for the trajectory *distribution*, which needs tens of
+> millions/iter). **Step 5 below is the config that makes it a big-batch run — the whole point.**
 
 ---
 
@@ -118,6 +126,68 @@ module load python/3.x            # or whatever the cluster provides
 source .venv/bin/activate
 srun python -u mappo.py
 ```
+
+---
+
+## Step 5 — big-batch config (the noise-limited interim CPU run)
+
+The point of the HPC-CPU run is a **near-critical-batch** (~1–2M steps/iter), not just faster 92k. All of
+these are `mppo.py` edits; walk through them with the user. Current values noted so you can find the lines.
+
+**5a. Auto-scale `NUM_WORKERS` to the allocation** (same as Step 3 — do it once):
+```python
+# right after the existing `NUM_WORKERS = 6` line:
+NUM_WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", NUM_WORKERS))
+```
+
+**5b. Auto-scale `STEPS_PER_ITER` with the worker count** (current: `STEPS_PER_ITER = 92000`). The laptop
+did 8 workers × ~11.5k. Keep the *per-worker* budget and let the batch grow with cores — and keep it a
+multiple of the episode length so every worker rolls the same integer number of whole episodes (else you
+get the fake-dip imbalance). Episode length ≈ `end_time/dt`; on the ~18 s OVERFIT horizon that's ~1800
+steps (VERIFY dt in the env — it was 0.01 s). Replace the constant with a derivation placed **after**
+`NUM_WORKERS` is finalized and after `OVERFIT_END`/`end_time` is known (so likely compute it near the top
+of `main()` or as a module constant if the horizon is fixed):
+```python
+EPISODE_STEPS      = 1800        # ≈ end_time/dt for the OVERFIT horizon — VERIFY against the env's dt
+EPISODES_PER_WORKER = 8          # keep the laptop's per-worker load; batch then scales with cores
+STEPS_PER_ITER = NUM_WORKERS * EPISODES_PER_WORKER * EPISODE_STEPS   # 192 cores -> ~2.76M; 64 -> ~920k
+```
+(If you'd rather cap the batch, set a smaller `EPISODES_PER_WORKER`, e.g. 4 → ~1.4M on 192 cores. Anything
+≥ ~1M puts you in the critical-batch range per `f2-noise-limited.md`.)
+
+**5c. Drop `EPOCHS` for the big batch** (current: `EPOCHS = 8`) — **the most important knob.** A ~2M-step
+batch does NOT need 8 reuse passes, and the serial PPO update scales with `EPOCHS × STEPS/ MINIBATCH`, so
+8 epochs at 2M ≈ ~10 min/update. Set:
+```python
+EPOCHS = 2                       # big-batch PPO: few passes. Update ~2 min at 2M instead of ~10.
+```
+
+**5d. (Optional) Raise `MINIBATCH_STEPS`** (current: `512`) to cut per-step overhead on the huge batch,
+e.g. `MINIBATCH_STEPS = 4096`. Same FLOPs, fewer Python/dispatch iterations. Safe; helps update time.
+
+**5e. (Optional) Bump `LR_ACTOR`** (current: `3e-4`) — a big, low-noise batch tolerates a larger step
+(~√-scaling). Try `6e-4`, but watch the log_std floor / entropy (the floor at σ≥0.25 guards the collapse
+that killed 6e-4 before). Let `critB`/`gcos` justify it rather than guessing.
+
+**5f. HPC run hygiene** — identical to Step 4 (BLAS `*_NUM_THREADS=1`, `MPLBACKEND=Agg`, `plt.show()` →
+`savefig`). Mandatory at high core counts.
+
+**What to expect / how to read it:**
+- Iter time ≈ **~93 s collection + ~2 min update ≈ 3.5 min** for a ~2M-step iter (collection wall-time is
+  ~constant vs the laptop because per-core rate is fixed; only the update grew, and 5c/5d tame it).
+- The diagnostics should now **confirm you escaped the noise floor**: `critB` (see `f2-noise-limited.md`)
+  should read **near or below** `STEPS_PER_ITER`, and `gcos` should climb **off ~0** onto a positive,
+  coherent value. If so, DET_R should descend **cleanly in far fewer iters** than the laptop's ~300-iter
+  noise-crawl (0.539 → target 0.392).
+- **Still ignore the first ~20 iters** (EMA warm-up + log_std transient) — same reading rule as on the laptop.
+- If the update is still too slow: `EPOCHS = 1`, and/or larger `MINIBATCH_STEPS`. If RAM is a worry it
+  isn't — a 2M-step buffer is ~1.5–2 GB, trivial on the node's 1–6 TB.
+- `critB` uses `NS=8` contiguous sub-batches; with 192 workers the blocks no longer equal one worker each,
+  but contiguous still ≈ groups of whole episodes, so the estimate stays valid (magnitude is
+  order-of-magnitude anyway).
+
+**Prereqs before this run:** Steps 1 (venv) → 2 (`fmpy compile Base_Model.fmu`) → 3/4 (SLURM + hygiene),
+then submit with `--cpus-per-task` set to the node you want (all 192, or a queue-friendlier 64–96).
 
 ---
 
