@@ -4,8 +4,13 @@ Moving F2 training (`mappo.py`) from the Windows dev box to Ubuntu / uni HPC for
 Parallel collection is already implemented (`parallel_collect.py`, `NUM_WORKERS` in `mappo.py`) and
 smoke-tested — the FMU step is the bottleneck and is CPU-bound, so it scales ~linearly with cores.
 
+**This doc has two phases:** **Phase 1 = the CPU-HPC interim run** (Steps 0–5 below — big-batch on the
+192-core node to solve the current 2-traj) and **Phase 2 = the full GPU migration** (the real target — the
+master plan is the "PHASE 2" section near the bottom). Do them in that order; Phase 1 buys progress while
+Phase 2 is built.
+
 Do the steps **one at a time**; each later step is a no-op on the current Windows run, so it's safe to
-add early. Status: **[0] dual-boot notes · [1] venv prep done · [2][3][4] pending · [5] big-batch config pending.**
+add early. Status: **[0] dual-boot notes · [1] venv prep done · [2][3][4] pending · [5] big-batch config pending · [Phase 2] GPU plan documented.**
 
 > **WHY WE'RE DOING THIS RUN (2026-09-10):** the gradient-noise-scale diagnostic proved F2 residual RL
 > is **deeply noise-limited — critical batch ~MILLIONS of steps vs the 92k we run on the laptop** (see
@@ -218,6 +223,82 @@ that killed 6e-4 before). Let `critB`/`gcos` justify it rather than guessing.
 
 **Prereqs before this run:** Steps 1 (venv) → 2 (`fmpy compile Base_Model.fmu`) → 3/4 (SLURM + hygiene),
 then submit with `--cpus-per-task` set to the node you want (all 192, or a queue-friendlier 64–96).
+
+---
+
+---
+
+# PHASE 2 — full GPU migration (the master plan / the real target)
+
+Steps 0–5 above are **Phase 1: the CPU-HPC interim run** — squeeze the biggest batch CPU can give (~2M
+steps/iter on the 192-core node) to solve the *current 2-traj* case while we build Phase 2. **Phase 2 is
+the actual destination.** Detailed reasoning is in `claude_memory/f2-noise-limited.md` and the
+GPU-PLANT FEASIBILITY block of `claude_memory/f2-hpc-migration.md`; this is the consolidated plan.
+
+## Why (the trigger, now proven by measurement)
+The gradient-noise-scale diagnostic proved F2 residual RL is **deeply noise-limited — critical batch
+~MILLIONS of steps** (see `f2-noise-limited.md`: critB settled in the millions vs the 92k laptop batch,
+`gcos≈0` = pure noise-thrash). CPU multiprocessing, even the 192-core node, tops out efficiently in the
+**hundreds-of-k/iter** — an order of magnitude short. **2 trajectories already need millions/iter; a
+trajectory DISTRIBUTION (the generalization goal) needs far more → thousands of parallel collectors →
+only a GPU-tensorized plant delivers that.** This is no longer speculative — the trigger condition ("need
+thousands of parallel envs") is met by data, which is also the thesis argument for why the problem needs scale.
+
+## What it is (and is NOT)
+- **NOT Isaac Gym / PhysX.** The plant is a custom ODE (fixed-wing aero + cable + suspended load), not an
+  articulated rigid body. You do NOT use a physics engine.
+- **It IS a hand-written BATCHED-TENSOR env:** the plant dynamics + integrator re-expressed as tensor ops
+  with a batch axis = thousands of envs stepped in lockstep on-device, with the WHOLE loop on GPU (F1 base
+  net, residual actor/critic, reward, reference library, domain randomization) and **zero CPU↔GPU transfer**.
+
+## The key insight — this is a PLANT PORT ONLY, not a research redesign
+The earlier "IPOPT expert is an in-loop wall" fear was WRONG for F2 (verified `residual_marl_env.py:305`
+"no CasADi anywhere"). **IPOPT runs only OFFLINE** (trajectory-library generation, once, on CPU); the
+**in-loop base is the frozen F1 distilled net** (LocalModelAgent). So there is **no expert to reimplement**
+— the port is just the plant. No research gamble.
+
+## What to port (difficulty by component)
+| Component | Difficulty |
+|---|---|
+| **FMU plant dynamics + integrator → batched tensors** | **The real work** — MEDIUM, laborious. Recover eqs from the `.c` / Simulink model (USER built it → guides), re-express as batched tensor math, batched fixed-step RK integrator. |
+| F1 base net (LocalModelAgent) + allocation `pinv` | Easy — net is GPU-native; allocation is batched linear algebra |
+| Residual actor + critic | Trivial — already torch nets |
+| Reward (manifold/stall/load/overspeed/overshoot) | Easy — elementwise/reduction tensor ops |
+| Reference library (`traj`, `expert_pos`) | Trivial — precomputed arrays, gather/index on device |
+| Domain randomization (sensing noise, AR(1), delay walk) | Easy — noise + ring-buffer gather |
+
+## The two genuinely hard parts
+1. **Faithful port + NUMERICAL VALIDATION vs the FMU (the gate).** Auto-generated Embedded Coder `.c` is
+   scalar soup — reconstruct the *actual* dynamics and verify divergence against the FMU across the operating
+   envelope. A wrong sign/coefficient trains beautifully and means nothing → validation is the gate, not a
+   spot-check. USER built the FMU → fast physics review in the loop.
+2. **Stiff cable constraint → integrator choice.** Cable-suspended dynamics can be stiff; that dictates
+   step size / integrator (fixed-step RK4 batched, watch stability). Surfaces early in the prototype.
+
+## Tooling (kernel-launch discipline is mandatory)
+PyTorch (`vmap` / **CUDA graphs**) or **NVIDIA Warp** (compiles fused kernels — ideal for this). The
+integrator MUST be vectorized across envs with **few, fused ops per step**; a naive Python loop over 1800
+steps firing dozens of tiny kernels goes **launch-bound**, especially on a weak GPU — killing the win.
+
+## Hardware
+- **GTX 1650 = dev + validate card** (and a real local speedup at current scale). Constraint is **VRAM (4GB)**
+  — the rollout buffer, not env state, is the cap (~2M-step buffer won't fit) → the 1650 is a *current-scale*
+  card. Its weakness is a feature: forces efficient, portable code.
+- **A40 cluster nodes = production scale** (`gpu5-6` = 64c + 10× A40, 48GB each; `gpu4` = 32c + 5×3090 + 3×A40).
+  VRAM stops mattering; run tens of millions of steps/iter → the distribution becomes trainable.
+
+## De-risk FIRST — a 1-day prototype before committing the week
+Port **only the plant step + integrator** for a batch of N envs, run it **open-loop**, and:
+1. **Match the FMU** on a known trajectory (numerical divergence check), and
+2. **Benchmark envs/sec** vs the CPU FMU.
+Green-light the full week if it hits **≥5× and matches the FMU**; if it's launch-bound at ~1.5×, switch to
+Warp before building the RL loop around it.
+
+## Effort & decision
+- **~1 week** with the user guiding the physics (built the FMU) + the validation pass. Bounded engineering,
+  **not** a research gamble (no expert redesign).
+- **Decision: GO** — the noise-limited evidence is the justification that was missing. Phase 1 (CPU big-batch)
+  runs in parallel as the interim; Phase 2 is the real deliverable.
 
 ---
 
