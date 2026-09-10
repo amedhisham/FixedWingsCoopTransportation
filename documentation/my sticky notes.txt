@@ -1,0 +1,138 @@
+1 
+todo list:
+Sept: 
+all month : write thesis
+week 2 : accept erasmus, find accomodation in enschede
+week 3: renew passport
+week 4 : figure out how to apply for visa - get in touch with uni
+______________________________________________
+Thesis to do: 
+1 - give to chat to produce overleaf, adjust grammar and punct, adjust equations and their numbers
+2 - add figures
+3 - maybe add fdot derivation in appendix
+4 - section in intro on organization of sections
+5 - clean references
+6 - fix mappo figure
+7 - note about implementation(isaac gym)
+
+2
+base:
+-cleanup model and make sure it's correct like this
+-model cable dynamics
+-wrap back the 2D matrices?
+-add low level controller and remove filter
+-do baseline testing with the classical controller + desynching to motivate RL thing
+-inter-agent collisions 
+-more motion constraints to reflect fixed-wings drones
+- per-agent effort penalty instead of one shared reward
+- fix commit history email and merge repos
+- comment the code
+- proper benchmarking casadi vs NN
+- add noise to own state obs
+- Trajectory on the env instance
+- Library generator, parallelized
+- Worker-pool RL collection
+- bigger NN
+ - reward potential
+- POMDP ? different arch?
+- DART/DAgger?
+- training in dagger optimization
+- base residual doesn't make sense 
+-clean dead code in deploy compare
+-should we also use ar1 noise in exploration for RL? 
+-customs are not balanced
+-possibly shrink action space to just two lambdas instead of four
+-really look into runtime of the rollout
+
+________________________________________________________
+three drones [0 0.66666666666666663 0 -0.57735026918962584 -0.33333333333333331 0.35 0.57735026918962584 -0.33333333333333331 -0.35]
+
+four drones  [ 0.5,  0.5,  0.20 ,-0.5,  0.5, -0.20 , -0.5, -0.5,  0.15 ,0.5, -0.5, -0.15]
+_______________________________________________________
+
+look at research places (robotac idk)
+
+3
+todo 
+
+
+Bosch report
+
+_____________________________________________________
+
+-observation noise applied to what exactly? before reconstruct ?
+
+-are we sure the sin cos are needed as inputs?
+
+-what do the phases do in the localmodelagent?
+
+
+
+- how do we feed the geometry tho? because it's static here probably the net just memorized it, we need to fix that 
+
+- same noise two drones, only noise and only desync
+
+- code is confusing now because there are noises and delays on top of demo desync that we don't use?
+
+-might need to retrain from the beginning while punishing the jitter?
+
+-what is the jerk cap?
+
+- idk why internal force summation did nothing? torques? ok we need to punish that too? but no, the N matrix guarantees forces not torques, so?
+
+-why are sudden changes of directions not causing the v norm to fall to 0? and why do we have such sudden movements even tho we have a filter on the forces
+
+- fix good A and ksi, make sure stall never happens, good demonstration, punish for stalling in RL directly
+
+-clean "collect prdot". no need to keep zombie "collect il data" alive
+- clean "ANALYTIC" in collect prdot, better make it an argument
+- clean dead lam_applied 
+-make sure no .copy is needed anywhere
+- we do inference in cpu now from what i see in the code, ok maybe with 4 data points it's not worth using gpu, but if we parallelize might be worth it
+
+-is it better to create like two separate net heads for the two outputs? instead of one net for everything, it becomes one net + two head nets
+
+- relative caps are still on, max abs action = 1
+- only actor obs normalization, not for critic also why?
+
+- why Use the fixed scenario while estimating the normalization statistics? doesn't matter, all the nets now carry their os and  om, so this practically dead code
+
+- in estimate norm, we should increase n from 2500, we should also probably use multiple trajectories, also why random action? probably degrarding the system even more, maybe just 0 action? same as above, doesn't matter 
+
+["load_err"]), but why is drone 0 load info is deemed as a good metric? it's delayed and noisy. same for jerk and swings, coord is even a global value it shouldn't be accessible to an agent? and why is agent 0 speed is considered the min? probably agent[0] carries global info somehow, might check residual marl env
+
+-we should have same warm start mech. for actor and critic
+- why reinit log_std when restarting?
+
+- critic trajectory-conditioning (the trajectory is now a hidden per-episode scenario param the critic can't see, same issue the delays had — worth adding if the advantage looks noisy).
+- add load ref to critic, also why is critic loss always too low?
+- why is there disagreement if load ref is not being noised, isn't G just based on RL? does the disagreement come from the errors? aka the wrench, not G
+
+- same traj different scales
+- train on two trajectories, then combine using bc, train on them again for fine tuning. rinse and repeat for a lot of trajectories?
+- gamma = 1?
+
+
+4
+
+1paper [3] questions:
+ - load damping coefficient? ->check thesis
+ - cable length? should be fine
+ - ew -> check thesis
+ - why is 13 ref - actual opposite to 10 - 12 -> check thesis
+ - number of columns of N(RL(t)) is 3n - 6 or n? -> n
+
+ - How to calculate derivatives? -> (t+1 - t)/dt 
+ - How to initialize simulation: states and derivatives -> at reference, identity
+ - wpos, wvel are positive definite weights, the phrase positive definite makes me feel they're matrices not scalars , even tho they're multiplied by scalars -> scalars
+ - Kp, Kv, Ki,KR, Kw, KiR are the values mentioned in the paper multiplied by I3? -> yes
+
+- simulink/python blocks , fmu , wrapper -> good
+
+___________________________________________________________________
+
+-lambda_dot missing terms when A and ksi are changing
+-force derivatives analytical or numerical
+- because vR_i that the optimizer sees is different from actual vR_i , somtimes the optimizer doesn't see that the plane is stalling, some other times it just cannot find a feasible solution
+- should i break the state correlation when sampling the minibatch and randomly select the agent like i do with time? or should i keep the 4 agents together and just randomly sample only the time?
+- should i add the positional encoding stuff to the critic state?
