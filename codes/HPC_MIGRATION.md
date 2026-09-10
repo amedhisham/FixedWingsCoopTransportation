@@ -5,7 +5,7 @@ Parallel collection is already implemented (`parallel_collect.py`, `NUM_WORKERS`
 smoke-tested — the FMU step is the bottleneck and is CPU-bound, so it scales ~linearly with cores.
 
 Do the steps **one at a time**; each later step is a no-op on the current Windows run, so it's safe to
-add early. Status: **[1] venv prep done · [2][3][4] pending · [5] big-batch config pending.**
+add early. Status: **[0] dual-boot notes · [1] venv prep done · [2][3][4] pending · [5] big-batch config pending.**
 
 > **WHY WE'RE DOING THIS RUN (2026-09-10):** the gradient-noise-scale diagnostic proved F2 residual RL
 > is **deeply noise-limited — critical batch ~MILLIONS of steps vs the 92k we run on the laptop** (see
@@ -17,19 +17,49 @@ add early. Status: **[1] venv prep done · [2][3][4] pending · [5] big-batch co
 
 ---
 
+## Step 0 — dual-boot shared folder (SAME directory on both OSes)
+
+The repo lives on a shared partition (e.g. `E:`) that **both Windows and Ubuntu open as the literally same
+directory** — same `.git`, same working tree. Consequences:
+
+- **No `git pull` needed to "get" Windows's commits.** It's the same repo — Ubuntu already has every commit.
+  A pull only fetches *new remote* commits; if the remote isn't ahead, it's a no-op.
+- **"Lots of changed files" on Ubuntu is a PHANTOM diff, not real changes.** NTFS mounted in Linux exposes
+  every file as `0777` (executable), so with `core.fileMode=true` git sees a mode change on *every* file.
+  Fix once (this clears it):
+  ```bash
+  git config core.fileMode false
+  git status                    # should go clean
+  ```
+  `.git/config` is shared, so this applies on both OSes — harmless on Windows (it ignores exec bits). CRLF is
+  already handled because `core.autocrlf=true` is set (shared config); if files still show modified after the
+  fileMode fix, then also `git config core.autocrlf input` and renormalize.
+- **Never `git reset --hard` / `git checkout .` to "clear" the phantom diff** — it won't stick until fileMode
+  is off and risks real files. Set `core.fileMode false` instead.
+- Editing code + running git in the shared folder is fine. The venv and heavy checkpoint I/O should NOT live
+  on NTFS (slow + OS-specific) — see Step 1.
+
+---
+
 ## Step 1 — venv on Ubuntu
 
 Run from this `codes/` dir (where `requirements.txt` lives). The only trick: install **CPU torch**
 separately (the pinned `torch==2.11.0+cu130` is a CUDA wheel that won't resolve on plain PyPI), then
 install everything else with the torch lines stripped. `torchvision` is **not used** anywhere — skip it.
 
+> **DUAL-BOOT: put the venv OUTSIDE the shared folder (on the ext4/Linux side), NOT at `codes/.venv/`.**
+> A Windows venv and a Linux venv are different binaries and can't coexist at one path in the shared
+> directory (building the Linux one there clobbers the Windows one), and NTFS is slow for the many-small-file
+> I/O a venv does. Keep the venv on ext4; work in the shared `codes/` folder as usual. (`.gitignore` still
+> ignores `codes/.venv/`, but we're not using that path on Linux.)
+
 ```bash
 # 0. system prereq
 sudo apt update && sudo apt install -y python3-venv python3-pip
 
-# 1. fresh venv
-python3 -m venv .venv
-source .venv/bin/activate
+# 1. fresh venv OFF the NTFS partition (ext4/home), then work in the shared codes/ dir
+python3 -m venv ~/venvs/fixedwings-linux
+source ~/venvs/fixedwings-linux/bin/activate
 python -m pip install --upgrade pip
 
 # 2. CPU torch, separately (drop the ==2.11.0 pin if that CPU wheel is missing — any recent 2.x is fine,
