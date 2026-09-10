@@ -124,6 +124,11 @@ srun python -u mappo.py
 ## Notes
 - Claude's saved memory lives under the *Windows* `~/.claude` and won't be visible to a Claude session on
   the Ubuntu side — this file is the portable copy of the plan. On Ubuntu: "continue the HPC migration"
-  + point at this file.
+  + point at this file. The full memory set is mirrored in `codes/claude_memory/*.md`.
 - The parallel-collection design + rationale (actor-only `collect_chunk`, value batched in `main`, why
   the critic left the rollout) is in the code comments of `mappo.py` / `parallel_collect.py`.
+- **`FOR_DISABLE_CONSOLE_CTRL_HANDLER=1` is a WINDOWS-only fix — safe to leave, no-op on Linux.** It sits
+  at the top of `mappo.py` and `parallel_collect.py` (via `os.environ.setdefault`). On Windows the FMU's
+  Intel-Fortran runtime installed a console Ctrl-C handler that `abort()`ed the process (`forrtl: error
+  200`) before Python could catch it; this env var disables it. On Linux Ctrl-C already reaches Python
+  normally, so the line does nothing — **do NOT remove it** (keeps one codebase for both OSes).

@@ -15,6 +15,15 @@ Domain randomization: fresh sensing noise every reset (env RNG) + per-episode co
 delays resampled from {1,2}. Saves residual_mappo.pt (actor) and residual_mappo_critic.pt.
 """
 
+import os
+# The FMU's Intel-Fortran runtime installs a Windows console Ctrl-C handler that abort()s the whole
+# process (forrtl: error 200) BEFORE Python's KeyboardInterrupt / the workers' SIG_IGN can run. Opt out
+# so Ctrl-C reaches Python and the clean-shutdown path (terminate workers + save resume ckpt) actually
+# fires. MUST be set before the FMU DLL loads -> top of module (workers re-import under spawn, and
+# parallel_collect sets it too). No-op on Linux/HPC.
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
+
+import math
 import time
 import numpy as np
 import torch
@@ -87,12 +96,12 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 8                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 120                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 32000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
+STEPS_PER_ITER = 92000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 6
+EPOCHS = 8
 MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
 GAMMA = 0.99
 LAMBDA = 0.95
@@ -107,6 +116,9 @@ ENT_COEF = 1e-3               # REGIME 1: back to 0 (the original GitHub value).
                              #   0.003 crept up, 0.01 runaway -> all moot without jerk.)
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
+LOG_STD_MIN = math.log(0.25) # FLOOR on exploration std (clamped after each actor step): decouples mean-
+                             #   learning (full LR) from std-collapse. Stops premature DET_R plateau where
+                             #   log_std sinks while the mean is still mis-placed. sigma>=0.25 -> entropy>~2.6.
 HIDDEN = (256, 256)          # actor+critic width — WIDENED 128->256 (function-preserving via widen_hidden.py)
                              #   to give capacity for a direction-dependent residual law vs the jagged
                              #   x-specialized 128-fit (f2-axis-generalization). Must match WARMSTART's hidden.
@@ -115,7 +127,7 @@ EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-actio
                              #   costs the same total as the old 1-traj eval (representative selection, flat budget).
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
-NUM_WORKERS = 1                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
+NUM_WORKERS = 8                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
                                       #   Pool of persistent workers (parallel_collect.py), each with its own
                                       #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
                                       #   Start at 2, raise toward core count (6 here; many more on HPC).
@@ -467,6 +479,11 @@ def main():
     hist_det_it, hist_det = [], []
     best_reward = -float("inf")              # RESET each run: reward is comparable only within a fixed
                                              #   reward scheme, so "best since THIS run started" (not carried).
+    if WARMSTART:                            # ...but seed it with the WARM-START policy's OWN eval so iter 1
+        base_eval = eval_policy(env, actor, om, os_, eval_scen)   # doesn't falsely claim "new best" for a
+        best_reward = base_eval["reward"]                         # policy that's actually WORSE than where we
+        print(f"warm-start baseline DET_R {best_reward:.3f} "     # started -> only genuine improvement saves.
+              f"(seeded best; saves only if beaten)")             # apples-to-apples: same eval, same scheme.
 
     def save_ckpt(path, best):               # full resumable state: actor + critic + norm + best reward
         torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
@@ -551,6 +568,10 @@ def main():
                     consist_lam_log = float(consist_lam.detach())
                 opt_a.zero_grad(); loss_a.backward()
                 nn.utils.clip_grad_norm_(actor.parameters(), MAX_GRAD); opt_a.step()
+                with torch.no_grad():                       # log_std FLOOR: keep exploration std >= 0.25
+                    actor.log_std.clamp_(min=LOG_STD_MIN)   #   (entropy floor ~2.6 on 10-D) so the mean
+                    #                                         keeps learning at full LR while the std can't
+                    #                                         collapse into premature DET_R plateau.
 
                 v = critic(state_t[mb])
                 loss_c = ((v - ret_t[mb]) ** 2).mean()

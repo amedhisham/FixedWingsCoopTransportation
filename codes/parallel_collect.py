@@ -21,6 +21,9 @@ Correctness: identical math to the sequential path (same collect_chunk, same bat
 desync/traj SAMPLING differs by seed across workers — which is the intended domain randomization anyway.
 """
 import os
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")   # FMU Intel-Fortran runtime abort()s on
+#   Ctrl-C (forrtl 200) before Python sees it -> disable its console handler so main's terminate() path
+#   runs. Set at module top (spawn workers import THIS first) AND in _init (belt-and-suspenders). No-op on Linux.
 import numpy as np
 import torch
 
@@ -32,6 +35,7 @@ def _init(env_kwargs, obs_dim, act_dim, hidden, dpos_list):
     dpos_list = the expert dpos arrays computed ONCE in main -> workers rebuild only the cheap traj
     closures and reuse these, skipping a redundant per-worker CasADi rollout."""
     import signal
+    os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")   # before this worker loads the FMU DLL
     signal.signal(signal.SIGINT, signal.SIG_IGN)   # workers IGNORE Ctrl-C; main alone handles it and
     #                                                terminates the pool (else every worker throws
     #                                                KeyboardInterrupt and the join() cleanup hangs).
