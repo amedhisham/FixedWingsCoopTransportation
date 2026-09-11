@@ -8,7 +8,9 @@
 #                                  #   96-core node -> higher allocated-core utilization; leaves 1 core headroom.
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
 #SBATCH --mem=64G                  # big-batch (~1.3M) buffer + 90 FMU instances; right-size later from the seff report
-#SBATCH --time=12:00:00            # wall-clock limit; job is KILLED at this. ITERS=120 @ ~3.5 min ~= 7 h. Raise if needed.
+#SBATCH --time=02:00:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
+#                                  #   SHORT time = better BACKFILL: SLURM slots you onto an idle node before a
+#                                  #   higher-priority reservation, instead of waiting behind it (fixes PD (Priority)).
 #SBATCH --output=f2_%j.log         # stdout (iter prints) -> here.  watch live:  tail -f f2_<jobid>.log
 #SBATCH --error=f2_%j.err          # stderr -> here
 #SBATCH --mail-user=ahmedhishamabdelghaffar.aboulenien@studenti.unipd.it   # END mail carries the seff efficiency report
