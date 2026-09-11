@@ -4,8 +4,10 @@
 #
 #SBATCH --job-name=f2_mappo
 #SBATCH --ntasks=1                 # ONE process; the Pool workers are child procs of it (single-node MP, not MPI)
-#SBATCH --cpus-per-task=95         # -> NUM_WORKERS = 90 (code reserves 1 core for the main proc).
-#SBATCH --nodelist=runner-08       # TEST: force onto the idle 96-core node (does it power up + schedule?)
+#SBATCH --cpus-per-task=94         # -> NUM_WORKERS = 93. 94 is runner-08's MAX (CPUEfctv=94; SLURM holds
+#                                  #   back 2 of the 96). 95+ => "node configuration not available" and the
+#                                  #   job silently falls through to runner-11 (192c) instead of pinning here.
+#SBATCH --nodelist=runner-08       # idle 96-core node (CPUAlloc=0, ~3TB RAM) -> clean unshared run.
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
 #SBATCH --mem=64G                  # big-batch (~1.3M) buffer + 90 FMU instances; right-size later from the seff report
 #SBATCH --time=06:00:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
