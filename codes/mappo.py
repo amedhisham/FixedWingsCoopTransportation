@@ -96,9 +96,9 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 28                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+ITERS = 150                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
                              #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
-STEPS_PER_ITER = 1_300_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
+STEPS_PER_ITER = 1_400_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
                              #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
                              #   batch the noise diagnostic demands. Episode = 1800 steps (18s OVERFIT / 0.01 dt).
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
@@ -146,7 +146,7 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
 # to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
 UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
-WARMSTART = "residual_mappo_overfit_xyz_2trj_ch3.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_xyz_2trj_ch.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head

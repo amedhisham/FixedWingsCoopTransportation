@@ -499,3 +499,88 @@ the local "Remote - Tunnels" extension → "Connect to Tunnel". Edit/run on the 
 ## Watching a job's output / plots
 - `sbatch` sends stdout to `--output=f2_%j.log`; run `python -u` so prints appear live; `tail -f f2_<id>.log` to watch.
 - `MPLBACKEND=Agg` + `plt.show()`→`savefig(...)` (Step 4 code edit) → plots written as PNG, nothing shown.
+
+---
+
+## SESSION FINDINGS — big-batch runs + cluster reality (2026-09-11)
+
+Operational lessons from the first real big-batch runs on DEI. Read alongside [[f2-noise-limited]].
+
+### Current Step-5 config (in mappo.py / train.slurm)
+- `STEPS_PER_ITER = 1_200_000` (MANUAL constant — user tunes it directly; rolls whole episodes → with 90
+  workers rounds up to 8 eps/worker ≈ 1.296M actual). `EPISODE_STEPS`=1800 (18 s OVERFIT horizon / 0.01 dt).
+- `EPOCHS = 4` · `MINIBATCH_STEPS = 4096` · `ITERS = 40` (use 4–12 for quick efficiency/timing probes).
+- `LOG_STD_MIN = math.log(0.3)` — floor RAISED from 0.25 to try to kill the warm-start log_std transient.
+  **It did NOT bind: σ settled ~0.337 on its own (> 0.30), so the clamp never engaged.** Per [[f2-noise-limited]]
+  the accepted approach is just to IGNORE the first ~20 iters, not fight the transient. To actually pin it you'd
+  need floor ≥ ~0.34 (or `=LOG_STD_INIT`).
+- `NUM_WORKERS = SLURM_CPUS_PER_TASK − 1` (reserve 1 core for the main proc). `UPDATE_THREADS` default
+  `min(NUM_WORKERS,32)`, train.slurm exports 32.
+
+### The serial-update bottleneck + the fix (IMPORTANT)
+- The PPO **update runs in the MAIN process while all workers sit idle** → it does NOT parallelize with the
+  collection workers. On the cluster it was pinned to 1 thread by the `OMP/MKL/OPENBLAS_NUM_THREADS=1` env
+  (which we set so 90 workers don't oversubscribe numpy/LAPACK — the base controller does per-step `pinv`/`svd`/
+  matmuls in EVERY worker, so those env pins ARE needed; `torch.set_num_threads(1)` only pins torch, not numpy).
+- **FIX: `torch.set_num_threads(UPDATE_THREADS)` in main() before the training loop.** It OVERRIDES the env cap
+  at runtime for the main process's torch ops only (verified locally: 12.5 s vs 25.4 s matmul @16 vs 1 thread).
+  Result: update 42 s → ~20–27 s. Workers stay safely pinned; main update multithreads. Best of both.
+- Scaling is sub-linear (small MLP matmuls): 1→16 threads gave ~2×. Bigger `MINIBATCH` (4096) helps it scale;
+  runner nodes are multi-socket so past ~24 threads/socket you hit NUMA.
+
+### Efficiency & the AUTO-CANCEL policy (hard 60% CPU floor)
+- Measured CPU efficiency: **11%** (pre-fix small batch) → **22%** (post-thread-fix small batch) → **56%**
+  (12-iter big batch). Steady-state per-iter is ~84–87%; the drag is a **one-time ~10 min startup** (see below),
+  so SHORT runs look bad. A 40-iter big-batch run amortizes it to ~70–80% → clears the 60% cutoff.
+- **Takeaway: never run short/small-batch jobs at scale (they trip <60% auto-cancel). Validate cheap, run big.**
+
+### Slow startup (the "feels slower than laptop")
+- `import torch,numpy,scipy,casadi,fmpy` alone = **9.6 s** on a compute node (NFS venv). NOT the main cost.
+- The ~10 min startup is the **90-worker Pool spawn** (each worker re-imports the whole stack from NFS +
+  instantiates its FMU + builds trajectory pairs) + the main CasADi expert build + warm-start eval. One-time
+  (Pool is persistent), so negligible over a 40-iter run — but it's what makes short runs feel slow.
+- Not yet optimized. If it ever matters: stage the venv to node-local `/ext` scratch (fast imports), and/or
+  cache the expert `dpos` arrays to `.npz` to skip the CasADi rebuild each launch.
+
+### NODE HETEROGENEITY — python 3.6 vs 3.12 (bit us hard)
+- **DEI nodes are NOT uniform in default python.** Login node, runner-13, and the older 32-core nodes have
+  **python 3.6.8** (`/usr/libexec/platform-python3.6`); runner-06/07 and the 96-core+ nodes have **3.12.13**.
+- The venv (built with 3.12, site-packages in `lib/python3.12/`) **only works on 3.12 nodes** — on a 3.6 node
+  `venv/bin/python` resolves to 3.6 and finds nothing (`ModuleNotFoundError: torch/numpy`). Nothing wrong with
+  the venv; it's the node.
+- **Training is safe:** a ≥91-cpu job can only land on the 96-core nodes (runner-07–10) or runner-11, which have
+  3.12. But **interactive sessions land anywhere** — pin to a known-3.12 node (`--nodelist=runner-08`) and always
+  check `python --version` before trusting it. NEVER run python on the login node (3.6, and it's a gateway anyway).
+- Robustness escape hatch if it ever bites a training node: a Singularity container (bundles its own python).
+
+### Scheduling reality (fairshare + backfill; NO reservations involved)
+- **User fairshare is structurally low: `FairShare ≈ 0.0125`** (`sshare -U`), because `NormShares ≈ 0.000162`
+  — a tiny student-account share of a busy cluster. So jobs routinely queue behind many higher-priority users.
+- `scontrol show reservation` → **none**. Pending `(Priority)` just means higher-priority jobs are ahead in the
+  ordering, NOT that nodes are reserved. Cluster load is dynamic (changes minute-to-minute).
+- **A whole-node request (91–95 cpus) is the HARDEST thing to schedule** at low priority — it needs a nearly-empty
+  96-core node. When busy, SLURM may estimate a start ~a day out on runner-11. Levers that help:
+  - **Shorter `--time`** → better BACKFILL (a 2 h job slots into gaps a 12 h job can't). Set `--time` realistically
+    (40 iters ≈ 1.5–2 h). Empirically, resubmitting 91-cpu (vs 95) started immediately once a slot opened — but
+    that was cluster state changing, not the 4 cores per se.
+  - Check before/after submit: `squeue --start -j <id>` (est. start + planned node), `sshare -U`, `sprio -j <id>`,
+    `squeue -p allgroups -t PD --start -S -Q` (who's ahead).
+
+### Co-tenant throttling → want an EXCLUSIVE clean node
+- Collection wall-time jitter (±15%, e.g. 88↔110 s) with NO blowups (identical per-worker work) was traced to
+  **sharing the node** — a co-tenant on runner-07 throttles memory bandwidth AND blocks you from all 96 cores.
+- Fix under test: pin an idle 96-core node (`--nodelist=runner-08`) and, once confirmed it powers up, add
+  `--exclusive` + `--cpus-per-task=95` (own all 96, use 95 → NUM_WORKERS=94) for consistent, un-throttled iters.
+- **`--exclusive` efficiency trap:** it allocates the WHOLE node, and seff = used/allocated. On a 96-core node
+  using 95 → fine (~85%). **NEVER `--exclusive` on runner-11 (192c) while using ~95** → 95/192 ≈ 47% → auto-cancel.
+  So `--exclusive` MUST be paired with a pinned 96-core node (or use ~all the node's cores).
+
+### The SCIENCE status (what the big run must answer)
+- This is the 2-traj MIX (+x+y+z / +x+y-z) warm-started from `..._2trj_ch3`, DET_R ~−0.54. **KNOWN-improvable to
+  −0.392** (reachable per [[f2-noise-limited]]) — NOT near ceiling.
+- 12-iter runs are INCONCLUSIVE by design (ignore first ~20 iters: log_std transient pads gcos, EMA warming).
+  Observed so far: `critB` EMA climbing 24k→170k (still warming, < 1.2M), `gcos` +0.7–0.9 (warm-up-inflated, ignore),
+  DET_R flat/noisy — all expected pre-iter-20.
+- **The 40-iter run is the experiment.** From iter ~20: does `critB` settle BELOW 1.2M and `gcos` climb genuinely
+  positive with `DET_R` descending toward −0.392? Old measurement at 92k had critB ~2–3M → **1.2M may still be
+  ~2× under critical**; if critB settles ~2–3M and DET_R won't descend, bump `STEPS_PER_ITER` toward 2–3M.
