@@ -96,9 +96,9 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 12                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+ITERS = 28                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
                              #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
-STEPS_PER_ITER = 1_200_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
+STEPS_PER_ITER = 1_300_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
                              #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
                              #   batch the noise diagnostic demands. Episode = 1800 steps (18s OVERFIT / 0.01 dt).
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
