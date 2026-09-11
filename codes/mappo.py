@@ -96,7 +96,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 120                  # warm-started from the fixed-scenario best -> generalizing, not learning
+ITERS = 10                  # warm-started from the fixed-scenario best -> generalizing, not learning
                              #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
 STEPS_PER_ITER = 92000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
                              #   on top of sampling noise -> need more draws/update or the gradient thrashes.
@@ -131,6 +131,11 @@ NUM_WORKERS = 8                       # PARALLEL collection: 1 = in-process (seq
                                       #   Pool of persistent workers (parallel_collect.py), each with its own
                                       #   FMU env. FMU sim is the bottleneck -> ~linear speedup to ~#cores.
                                       #   Start at 2, raise toward core count (6 here; many more on HPC).
+_slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")   # HPC: auto-scale to the SLURM allocation.
+if _slurm_cpus:                                       #   Reserve ONE core for the main process (collection
+    NUM_WORKERS = max(1, int(_slurm_cpus) - 1)        #   waits on the Pool; update runs in main) -> request
+                                      #   91 cpus => 90 workers, no oversubscription, clean batch math.
+                                      #   Off-SLURM (laptop) keeps the constant above. No-op unless SLURM sets it.
 WARMSTART = "residual_mappo_overfit_xyz_2trj_ch3.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
@@ -666,9 +671,13 @@ def main():
     ax[1].plot(hist_det_it, hist_det, "k-o", ms=4, label="deterministic (mean action)")
     ax[1].set_ylabel("mean loop dist (m)"); ax[1].set_xlabel("iteration"); ax[1].grid(True); ax[1].legend()
     fig.suptitle("MAPPO training — residual on manifold reward")
-    plt.tight_layout(); plt.savefig("mappo_training.png", dpi=150)
-    print("saved mappo_training.png")
-    plt.show()
+    tag = os.environ.get("SLURM_JOB_ID", "")            # HPC: tag the figure with the job id so reruns
+    fname = f"mappo_training{'_' + tag if tag else ''}.png"   #   don't overwrite; plain name off-SLURM
+    plt.tight_layout(); plt.savefig(fname, dpi=150)
+    print(f"saved {fname}")
+    import matplotlib as _mpl                            # headless-safe: only pop a window on an interactive
+    if _mpl.get_backend().lower() != "agg":              #   backend (laptop). Under MPLBACKEND=Agg (HPC batch)
+        plt.show()                                       #   this is skipped so it can't hang a compute node.
 
 
 if __name__ == "__main__":
