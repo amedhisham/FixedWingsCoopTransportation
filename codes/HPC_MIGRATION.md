@@ -13,9 +13,10 @@ Do the steps **one at a time**; each later step is a no-op on the current Window
 add early. Status (updated 2026-09-11): **[0] git fixed on Ubuntu (fileMode+autocrlf, tree clean) · [1]
 DONE — venv built + all imports/CUDA verified · [2] DONE — FMU compiled for linux64, loads+steps · [3] DONE
 — NUM_WORKERS auto-scales from SLURM_CPUS_PER_TASK (reserves 1 core for main) · [4] DONE — headless plots
-(plt.show guarded, job-id-tagged savefig) + `train.slurm` written · [5] big-batch config pending (walk through
-with user) · [Phase 2] GPU plan documented. CLUSTER (DEI/UniPD): SETUP DONE — repo cloned, venv built, FMU
-recompiled, smoke run green on a compute node (~99 s/iter, 8 cpus). See "DEI CLUSTER DEPLOYMENT REFERENCE" below.**
+(plt.show guarded, job-id-tagged savefig) + `train.slurm` written · [5] DONE — big-batch config applied
+(STEPS_PER_ITER=1.2M manual, EPOCHS=4, MINIBATCH=4096, UPDATE_THREADS=32, ITERS=40 test) + main-update
+multithreading fix · [Phase 2] GPU plan documented. CLUSTER (DEI/UniPD): SETUP DONE + first cluster runs
+green (90 workers). See "DEI CLUSTER DEPLOYMENT REFERENCE" below.**
 
 > **UBUNTU VENV (built 2026-09-11):** `~/venvs/fixedwings-linux` (ext4, off the shared NTFS), Python 3.12.3,
 > **CUDA torch 2.11.0+cu130** — `torch.cuda.is_available()==True` on the GTX 1650. All project imports green
@@ -413,7 +414,17 @@ Docs: https://docs.dei.unipd.it/en/CLUSTER/Overview (+ Slurm_basics, Slurm_GPUs,
   (single-node multiprocessing; NOT MPI/multi-node). Same pattern as the docs' MATLAB-parfor example.
 - **Mandatory sbatch options:** `--ntasks`, `--partition`, `--time`, `--mem`. Time formats: `mm`, `mm:ss`, `hh:mm:ss`, `dd-hh[:mm:ss]`.
 - **GPU (Phase 2):** `--gres=gpu:l40s:N` / `gpu:a40:N` / `gpu:rtx:N`. Limits: **8 GPU/user; A40 & L40S 8 cores/GPU; RTX 3090 6 cores/GPU** (In_brief page says 4 for 3090 — assume the stricter). Allocation is exclusive; no per-GPU-mem request.
-- **Limits:** 70 running jobs/user; 35-day max per job (request far less to start sooner). **They enforce efficiency** — over-request or idle allocations can get jobs killed. Always set `--mail-type END` (the mail carries the `seff` efficiency report to calibrate the next run).
+- **Limits:** 70 running jobs/user; 35-day max per job (request far less to start sooner). Always set `--mail-type END` (the mail carries the `seff` efficiency report to calibrate the next run).
+- **⚠️ AUTO-CANCEL EFFICIENCY POLICY (active since mid-2026 — printed on every `sbatch`):** jobs are
+  **automatically cancelled** below the threshold — **CPU jobs: CPU efficiency < 60%**; GPU jobs: GPU
+  efficiency < 10% AND GPU-mem < 10%. This is a HARD constraint, not advice. Consequences for F2:
+  - The PPO **update is serial** (main process, workers idle) → a small-batch run tanks CPU efficiency
+    (measured 11% pre-fix, 22% after the update-threading fix on the 10-iter test) and **would be killed**.
+  - The fix is the **big-batch config (Step 5)**: collection (90 cores) dominates the wall time, `EPOCHS`
+    low, big `MINIBATCH` + `UPDATE_THREADS=32` so the update uses more cores, and enough `ITERS` to amortize
+    the ~60-90 s startup (imports + CasADi build). Big-batch estimate ~70-80% CPU efficiency → clears 60%.
+  - **Do NOT run short/small-batch jobs at scale** — they trip the 60% cutoff. Validate cheaply, run big.
+  - Right-size `--mem` from the seff report (small-batch peak was 32.5/48 GB); big batch uses 64 GB.
 - **Commands:** `sbatch train.slurm` · `squeue -u $USER` / `squeue -p allgroups` · `squeue --start -j <id>` (est. start) · `scancel <id>` · `scontrol show node runner-11` · live progress `myjobinfo <id>` / `nvtop` / post-hoc `sacct` + `seff <id>`.
 - **See free nodes BEFORE submitting** (key column %C = Alloc/Idle/Other/Total):
   ```bash

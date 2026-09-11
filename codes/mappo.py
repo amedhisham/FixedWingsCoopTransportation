@@ -96,13 +96,15 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 10                  # warm-started from the fixed-scenario best -> generalizing, not learning
-                             #   from scratch. ~88s/iter at 20k steps -> ~3.7h.
-STEPS_PER_ITER = 92000       # ~8x2 episodes / update. Domain randomization adds per-SCENARIO draw variance
-                             #   on top of sampling noise -> need more draws/update or the gradient thrashes.
+ITERS = 4                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+                             #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
+STEPS_PER_ITER = 1_200_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
+                             #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
+                             #   batch the noise diagnostic demands. Episode = 1800 steps (18s OVERFIT / 0.01 dt).
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
-EPOCHS = 8
-MINIBATCH_STEPS = 512        # minibatch size in ENV STEPS (each expands to N agent samples)
+EPOCHS = 4                   # big-batch: fewer reuse passes than the old 8 (update scales EPOCHS x steps/minibatch)
+MINIBATCH_STEPS = 4096       # minibatch size in ENV STEPS (each expands to N agent samples). Raised 512->4096:
+                             #   bigger matmuls -> fewer python iterations AND the update actually scales with threads
 GAMMA = 0.99
 LAMBDA = 0.95
 CLIP = 0.2
