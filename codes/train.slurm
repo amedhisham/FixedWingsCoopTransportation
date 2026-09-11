@@ -21,4 +21,5 @@ export MPLBACKEND=Agg               # headless matplotlib (no $DISPLAY on comput
 cd "$SLURM_SUBMIT_DIR"              # submit from codes/ so relative paths (Base_Model.fmu, *.npz, *.pt) resolve
 source ~/venvs/fixedwings-linux/bin/activate    # NO `module load` — DEI has none; system py3.12 + our venv
 
-srun python -u mappo.py            # -u = unbuffered so prints appear live in the .log
+srun --unbuffered python -u mappo.py   # --unbuffered (srun) + -u (python) => line-by-line live prints in the .log
+#                                      #   (without --unbuffered, srun+NFS batch the output into chunks)

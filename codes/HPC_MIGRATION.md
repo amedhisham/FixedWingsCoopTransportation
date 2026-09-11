@@ -212,7 +212,8 @@ export MPLBACKEND=Agg             # headless matplotlib (no $DISPLAY on compute 
 
 cd "$SLURM_SUBMIT_DIR"            # submit from codes/ so relative paths (Base_Model.fmu, *.npz) resolve
 source ~/venvs/fixedwings-linux/bin/activate   # NO `module load` — DEI has no module system; system py3.12 + venv
-srun python -u mappo.py          # -u = unbuffered so prints appear live in the .log
+srun --unbuffered python -u mappo.py   # --unbuffered (srun) + -u (python) => line-by-line live prints
+#                                      #   (without --unbuffered, srun+NFS batch the .log into chunks)
 ```
 > NOTE: DEI uses `--ntasks 1 --cpus-per-task N` (NOT `--nodes`). Our collection is one Python process
 > spawning N child worker processes on ONE node — that's a single task with N CPUs, exactly the cluster's

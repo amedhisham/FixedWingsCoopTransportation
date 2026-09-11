@@ -136,6 +136,13 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
     NUM_WORKERS = max(1, int(_slurm_cpus) - 1)        #   waits on the Pool; update runs in main) -> request
                                       #   91 cpus => 90 workers, no oversubscription, clean batch math.
                                       #   Off-SLURM (laptop) keeps the constant above. No-op unless SLURM sets it.
+# Threads for the SERIAL PPO update in the MAIN process. Collection workers are each pinned to 1 thread; during
+# the update they sit IDLE, so the main process is free to multithread the matmuls. The SLURM script's
+# OMP/MKL_NUM_THREADS=1 (needed so 90 workers don't oversubscribe during collection) would otherwise pin the
+# update to a SINGLE core -> ~3x slower than a laptop that lets torch use many cores. torch.set_num_threads()
+# (called in main() below) overrides that env cap at runtime for the main process's torch ops. Tune via env;
+# small MLP matmuls stop scaling past ~8-16 threads, so more just adds overhead.
+UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 16)))
 WARMSTART = "residual_mappo_overfit_xyz_2trj_ch3.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
@@ -511,6 +518,8 @@ def main():
         print(f"PARALLEL collection: {NUM_WORKERS} worker processes "
               f"(~{STEPS_PER_ITER // NUM_WORKERS} steps each)")
 
+      torch.set_num_threads(UPDATE_THREADS)   # main-process update multithreads (workers idle during it) ->
+      print(f"main-process torch threads = {torch.get_num_threads()} (SERIAL update; workers pinned to 1)")
       for it in range(1, ITERS + 1):
         t0 = time.perf_counter()
         if collector is not None:                          # PARALLEL: workers roll chunks (actor-only)
