@@ -4,7 +4,7 @@
 #
 #SBATCH --job-name=f2_mappo
 #SBATCH --ntasks=1                 # ONE process; the Pool workers are child procs of it (single-node MP, not MPI)
-#SBATCH --cpus-per-task=91         # -> NUM_WORKERS = 90 (code reserves 1 core for the main proc).
+#SBATCH --cpus-per-task=95         # -> NUM_WORKERS = 90 (code reserves 1 core for the main proc).
 #SBATCH --nodelist=runner-08       # TEST: force onto the idle 96-core node (does it power up + schedule?)
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
 #SBATCH --mem=64G                  # big-batch (~1.3M) buffer + 90 FMU instances; right-size later from the seff report
