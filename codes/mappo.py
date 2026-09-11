@@ -96,7 +96,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 4                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+ITERS = 12                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
                              #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
 STEPS_PER_ITER = 1_200_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
                              #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
@@ -118,7 +118,7 @@ ENT_COEF = 1e-3               # REGIME 1: back to 0 (the original GitHub value).
                              #   0.003 crept up, 0.01 runaway -> all moot without jerk.)
 MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
-LOG_STD_MIN = math.log(0.25) # FLOOR on exploration std (clamped after each actor step): decouples mean-
+LOG_STD_MIN = math.log(0.3) # FLOOR on exploration std (clamped after each actor step): decouples mean-
                              #   learning (full LR) from std-collapse. Stops premature DET_R plateau where
                              #   log_std sinks while the mean is still mis-placed. sigma>=0.25 -> entropy>~2.6.
 HIDDEN = (256, 256)          # actor+critic width — WIDENED 128->256 (function-preserving via widen_hidden.py)
@@ -142,9 +142,10 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # the update they sit IDLE, so the main process is free to multithread the matmuls. The SLURM script's
 # OMP/MKL_NUM_THREADS=1 (needed so 90 workers don't oversubscribe during collection) would otherwise pin the
 # update to a SINGLE core -> ~3x slower than a laptop that lets torch use many cores. torch.set_num_threads()
-# (called in main() below) overrides that env cap at runtime for the main process's torch ops. Tune via env;
-# small MLP matmuls stop scaling past ~8-16 threads, so more just adds overhead.
-UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 16)))
+# (called in main() below) overrides that env cap at runtime for the main process's torch ops. Tune via env
+# (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
+# to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
+UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
 WARMSTART = "residual_mappo_overfit_xyz_2trj_ch3.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
