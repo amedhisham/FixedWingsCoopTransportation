@@ -1,0 +1,14 @@
+  built mix dir +x+y+z   |move|=5.0m ramp 16s  dpos (4, 1800, 3)
+  built mix dir +x+y-z   |move|=5.0m ramp 16s  dpos (4, 1800, 3)
+OVERFIT (feasible curriculum RUNG 3 MIX): warm=residual_mappo_overfit_xyz_2trj_ch3.pt  2 dirs @ 5.0m  horizon=18s  (saves -> residual_mappo_overfit*.pt)
+eval on 2 trajs ['+x+y+z', '+x+y-z'] (mean = best-net selection metric)
+actor warm-started from residual_mappo_overfit_xyz_2trj_ch3.pt (+ its obs normalization + critic)
+warm-start baseline DET_R -0.537 (seeded best; saves only if beaten)
+PARALLEL collection: 90 worker processes (~13333 steps each)
+main-process torch threads = 32 (SERIAL update; workers pinned to 1)
+iter   1  team_ep_R -10283.59  sampled_loop 0.485  DET_R -0.540  loop 0.494 [+x+y 0.458 +x+y 0.530]  load 0.112  vmin 0.117  stall% 0.4  swing 0.204  coord 0.179  satL 0.18  satW 0.76  gap -0.009  | critic_loss 0.002  EV +0.96  critB 23761(raw 23761)  gcos +nan  ent 4.004  | 167.8s (coll 136.8 upd 23.0)
+iter   2  team_ep_R  -8990.14  sampled_loop 0.487  | critic_loss 0.001  EV +0.96  critB 25136(raw 37517)  gcos +0.97  ent 3.837  | 123.4s (coll 93.7 upd 22.3)
+iter   3  team_ep_R  -8017.67  sampled_loop 0.486  | critic_loss 0.002  EV +0.96  critB 30605(raw 79827)  gcos +0.95  ent 3.696  | 118.9s (coll 88.8 upd 22.9)
+iter   4  team_ep_R  -7035.94  sampled_loop 0.485  DET_R -0.537  loop 0.492 [+x+y 0.455 +x+y 0.530]  load 0.112  vmin 0.164  stall% 0.4  swing 0.206  coord 0.160  satL 0.16  satW 0.76  gap -0.008  (new best -0.537 -> saved)  | critic_loss 0.001  EV +0.98  critB 31478(raw 39329)  gcos +0.94  ent 3.550  | 123.8s (coll 91.9 upd 24.5)
+best (deploy) -> residual_mappo.pt (BEST DET_R -0.537);  resume -> residual_mappo_last.pt
+saved mappo_training_4960243.png
