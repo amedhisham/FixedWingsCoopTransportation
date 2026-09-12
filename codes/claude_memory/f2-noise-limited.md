@@ -1,6 +1,6 @@
 ---
 name: f2-noise-limited
-description: DECISIVE 2026-09-10 — F2 residual RL is DEEPLY gradient-noise-limited (critical batch ~MILLIONS of steps vs 92k working). Proven via gradient-noise-scale (critB) + cross-iter cosine (gcos) diagnostics. Flips the verdict: GPU-tensorized plant (thousands of parallel collectors) is now NECESSARY, not optional.
+description: 2026-09-10 F2 looked gradient-noise-limited (critB "millions", gcos~0 at 92k). CORRECTED 2026-09-12 ([[f2-rotation-limited]]): the "millions" was ESTIMATOR BREAKDOWN below the noise floor; at a SUPERCRITICAL 1.4M batch critB reads ~300-700k and gcos~0.6-0.8 -> NOT noise-limited, it's a ROTATION-limited slow crawl. The "GPU now necessary" trigger is WEAKENED (rests only on the trajectory distribution, not the 2-traj case).
 metadata:
   node_type: memory
   type: project
@@ -8,7 +8,9 @@ metadata:
   modified: 2026-09-10T00:00:00.000Z
 ---
 
-**THE DECISIVE F2 RESULT (2026-09-10): F2 residual training is GRADIENT-NOISE-LIMITED, critical batch ~MILLIONS of steps.** Settles the long "do we need more steps per iter?" debate with a NUMBER. USER'S ORIGINAL INSTINCT ("each iter points a different way -> need more steps") was RIGHT; my early "EV high so not variance-limited" was WRONG — EV measures the CRITIC fit and is BLIND to POLICY-GRADIENT variance (that's the whole point).
+**⚠️ CORRECTION 2026-09-12 — READ [[f2-rotation-limited]] FIRST. The headline below ("critical batch ~millions", "GPU now necessary") is WRONG and was overturned by a supercritical-batch rerun.** The "millions" critB was the McCandlish estimator BREAKING DOWN at 92k: `raw nan` = G2≤0 = signal below the noise floor, and the EMA then held stale huge values. Running a properly SUPERCRITICAL batch (1.4M, on the 94-core cluster node) gives a CLEAN self-consistent reading: **critB ≈ 300–700k (EMA≈raw, no nan) and gcos ≈ 0.6–0.8.** So the true critical batch for the 2-traj MIX is ~300–700k, NOT millions; 1.4M is ~2–4× supercritical. F2-2traj is therefore NOT noise-limited — it's ROTATION-limited (a slowly-descending spiral; see [[f2-rotation-limited]]). Consequence: the "GPU-tensorized plant is now NECESSARY" verdict is NOT supported for the 2-traj case (a 96-core node already exceeds critical); GPU's case now rests ONLY on the trajectory DISTRIBUTION scaling (batch ≈ K × ~200–300k/task). The diagnostic METHOD and CITATIONS below remain valid; only the magnitude/verdict are corrected. Keep in mind: a noise-scale estimate is only trustworthy when the batch RESOLVES the signal (no `raw nan`).
+
+**THE (SUPERSEDED) 2026-09-10 RESULT: F2 residual training looked GRADIENT-NOISE-LIMITED, critical batch ~MILLIONS of steps.** Settles the long "do we need more steps per iter?" debate with a NUMBER. USER'S ORIGINAL INSTINCT ("each iter points a different way -> need more steps") was RIGHT; my early "EV high so not variance-limited" was WRONG — EV measures the CRITIC fit and is BLIND to POLICY-GRADIENT variance (that's the whole point).
 
 **DIAGNOSTICS ADDED to mappo.py (in the per-iter print):**
 - `critB` = gradient NOISE SCALE / critical batch size (McCandlish et al. 2018, arXiv:1812.06162), in STEPS (vs STEPS_PER_ITER). Method: split the batch into NS=8 **CONTIGUOUS** sub-batches (≈ per-worker ≈ different desync/traj realizations — NOT random-step split, which UNDERESTIMATES because steps within an episode are correlated -> every sub-batch = same episode-blend -> tr(Σ) too small). Two-batch solve: |G_big|²=|mean_i g_i|² (signal), |G_small|²=mean_i|g_i|² (signal+noise) -> extrapolate 1/B→0 for |G|² (UNBIASED, B_big need not be huge; but single-iter est is NOISY -> EMA 0.9). `critB N(raw M)` prints EMA and raw.

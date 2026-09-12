@@ -79,6 +79,9 @@ MIX_DIRS = [                           # (label, unit move direction). scale via
     # and WARM-START the 2-traj from the solved net (they co-learn -> the 2nd comes up fast).
     ("+x+y+z", (1.0,  1.0,  0.5)),
     ("+x+y-z", (1.0,  1.0, -0.5)),   # 2-traj phase: added on top of the solved +x+y+z net (warm-started)
+    ("+.2x-y-z", (0.2, -1.0, -1.0)), # 3rd traj (2026-09-13): BRAVE off-axis dir (mostly -y-z, unseen) to push
+    #                                  real generalization. PRE-FLIGHT checked for blowup from the -0.38 warm
+    #                                  start; DROP MIX_SCALE (global) if it blows.
 ]
 MIX_SCALE = 5.0                        # displacement magnitude (m) along each dir. DROP if any member blows.
 MIX_RAMP = 16.0                        # quintic move duration (s); gentle.
@@ -96,7 +99,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 60                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+ITERS = 150                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
                              #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
 STEPS_PER_ITER = 1_400_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
                              #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
@@ -122,7 +125,7 @@ LOG_STD_MIN = math.log(0.32) # FLOOR on exploration std (clamped after each acto
                              #   learning (full LR) from std-collapse. Stops premature DET_R plateau where
                              #   log_std sinks while the mean is still mis-placed. H = act_dim*(0.5*ln(2*pi*e)
                              #   + log_std) = 10*(1.4189 + log_std): sigma=0.32 -> ent~2.79 (sigma=0.25 -> 0.33).
-FREEZE_LOG_STD = True        # DIAGNOSTIC: fix log_std (requires_grad=False) at sigma=0.32 (ent~2.79) so the
+FREEZE_LOG_STD = False       # DIAGNOSTIC: fix log_std (requires_grad=False) at sigma=0.32 (ent~2.79) so the
                              #   ENTIRE actor gradient is the MEAN direction. Then gcos/critB/gnorm (which
                              #   skip params with grad=None) become MEAN-ONLY -> answers "is the DETERMINISTIC
                              #   policy's update coherent?" without the entropy-annealing confound. Set False
@@ -152,7 +155,7 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
 # to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
 UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
-WARMSTART = "residual_mappo_overfit_xyz_2trj_ch.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_interp075.pt"   # the -0.380 net (interp of the 2-traj spiral endpoints,
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
