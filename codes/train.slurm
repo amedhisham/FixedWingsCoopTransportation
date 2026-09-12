@@ -9,8 +9,10 @@
 #                                  #   job silently falls through to runner-11 (192c) instead of pinning here.
 #SBATCH --nodelist=runner-08       # idle 96-core node (CPUAlloc=0, ~3TB RAM) -> clean unshared run.
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
-#SBATCH --mem=64G                  # big-batch (~1.3M) buffer + 90 FMU instances; right-size later from the seff report
-#SBATCH --time=06:00:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
+#SBATCH --mem=96G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
+#                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
+#                                  #   pressure (job COMPLETED, no OOM). node has ~3TB; 96G is comfortable headroom.
+#SBATCH --time=06:30:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
 #                                  #   SHORT time = better BACKFILL: SLURM slots you onto an idle node before a
 #                                  #   higher-priority reservation, instead of waiting behind it (fixes PD (Priority)).
 #SBATCH --output=f2_%j.log         # stdout (iter prints) -> here.  watch live:  tail -f f2_<jobid>.log

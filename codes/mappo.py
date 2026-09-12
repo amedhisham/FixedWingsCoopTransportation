@@ -121,6 +121,11 @@ LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks sw
 LOG_STD_MIN = math.log(0.3) # FLOOR on exploration std (clamped after each actor step): decouples mean-
                              #   learning (full LR) from std-collapse. Stops premature DET_R plateau where
                              #   log_std sinks while the mean is still mis-placed. sigma>=0.25 -> entropy>~2.6.
+FREEZE_LOG_STD = True        # DIAGNOSTIC: fix log_std (requires_grad=False) at sigma=0.3 (ent~2.7) so the
+                             #   ENTIRE actor gradient is the MEAN direction. Then gcos/critB/gnorm (which
+                             #   skip params with grad=None) become MEAN-ONLY -> answers "is the DETERMINISTIC
+                             #   policy's update coherent?" without the entropy-annealing confound. Set False
+                             #   to restore learnable exploration std.
 HIDDEN = (256, 256)          # actor+critic width — WIDENED 128->256 (function-preserving via widen_hidden.py)
                              #   to give capacity for a direction-dependent residual law vs the jagged
                              #   x-specialized 128-fit (f2-axis-generalization). Must match WARMSTART's hidden.
@@ -487,6 +492,10 @@ def main():
         print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
     om_t = torch.tensor(om, device=DEVICE); os_t = torch.tensor(os_, device=DEVICE)
     actor.log_std.data.fill_(LOG_STD_INIT)      # set exploration scale (overrides warm-start's)
+    if FREEZE_LOG_STD:                          # DIAGNOSTIC: pin exploration std, exclude it from all gradients
+        actor.log_std.data.fill_(LOG_STD_MIN)   #   -> sigma=0.3, ent~2.7 held constant
+        actor.log_std.requires_grad_(False)     #   -> grad=None -> gcos/critB/gnorm are MEAN-only from here
+        print(f"log_std FROZEN at {LOG_STD_MIN:.3f} (sigma={math.exp(LOG_STD_MIN):.2f}); gradients are mean-only")
     opt_a = torch.optim.Adam(actor.parameters(), lr=LR_ACTOR)
     opt_c = torch.optim.Adam(critic.parameters(), lr=LR_CRITIC)
 
@@ -581,6 +590,9 @@ def main():
         actor.zero_grad(set_to_none=True)                                     # clear before the REAL update
         g_full = g_sum / NS                                                   # full-batch gradient direction
         G_big_sq = float(g_full.pow(2).sum())                                 # |mean g_i|^2
+        gnorm = math.sqrt(G_big_sq)                                           # full-batch grad MAGNITUDE (SLOPE):
+        #   big gnorm + no DET_R descent => LR OVERSHOOT (lower LR);  small gnorm => shallow/near-critical
+        #   (LR won't help). With FREEZE_LOG_STD this is the pure MEAN-gradient norm.
         if prev_g is not None:                                                # CROSS-ITER COSINE: do consecutive
             den = float(g_full.norm() * prev_g.norm())                        #   updates point the SAME way?
             gcos = float((g_full * prev_g).sum() / den) if den > 1e-12 else float("nan")
@@ -660,7 +672,7 @@ def main():
         bn_str = f"{bnoise_ema / N:.0f}" if bnoise_ema else "n/a"    # critical batch in STEPS (vs STEPS_PER_ITER)
         bnr = f"{b_noise / N:.0f}" if np.isfinite(b_noise) else "nan"        # RAW per-iter (EMA can hide bounce)
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
-              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  critB {bn_str}(raw {bnr})  gcos {gcos:+.2f}  "
+              f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  critB {bn_str}(raw {bnr})  gcos {gcos:+.2f}  gnorm {gnorm:.2e}  "
               f"ent {ent.item():.3f}{blow_str}  | {dt:.1f}s (coll {t_coll:.1f} upd {t_update:.1f})")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> terminating workers + saving resume checkpoint")
