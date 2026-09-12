@@ -96,7 +96,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 80                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
+ITERS = 60                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
                              #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
 STEPS_PER_ITER = 1_400_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
                              #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
@@ -110,7 +110,7 @@ LAMBDA = 0.95
 CLIP = 0.2
 LR_ACTOR = 3e-4
 LR_CRITIC = 1e-3
-ENT_COEF = 1e-3               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
+ENT_COEF = 0               # REGIME 1: back to 0 (the original GitHub value). The entropy COLLAPSE that
                              #   forced ENT_COEF>0 was a REGIME-4 artifact of the JERK term (its penalty was
                              #   cheapest to cut by shrinking log_std -> killing exploration). With no jerk,
                              #   nothing pushes entropy down, so 0 works: PPO clip + the Gaussian's natural
@@ -120,8 +120,9 @@ MAX_GRAD = 1.0
 LOG_STD_INIT = -1.0          # lower exploration (std~0.37) — std~0.6 kicks swamped the signal
 LOG_STD_MIN = math.log(0.32) # FLOOR on exploration std (clamped after each actor step): decouples mean-
                              #   learning (full LR) from std-collapse. Stops premature DET_R plateau where
-                             #   log_std sinks while the mean is still mis-placed. sigma>=0.25 -> entropy>~2.6.
-FREEZE_LOG_STD = True        # DIAGNOSTIC: fix log_std (requires_grad=False) at sigma=0.3 (ent~2.7) so the
+                             #   log_std sinks while the mean is still mis-placed. H = act_dim*(0.5*ln(2*pi*e)
+                             #   + log_std) = 10*(1.4189 + log_std): sigma=0.32 -> ent~2.79 (sigma=0.25 -> 0.33).
+FREEZE_LOG_STD = True        # DIAGNOSTIC: fix log_std (requires_grad=False) at sigma=0.32 (ent~2.79) so the
                              #   ENTIRE actor gradient is the MEAN direction. Then gcos/critB/gnorm (which
                              #   skip params with grad=None) become MEAN-ONLY -> answers "is the DETERMINISTIC
                              #   policy's update coherent?" without the entropy-annealing confound. Set False
@@ -504,6 +505,12 @@ def main():
     bnoise_ema = None                        # EMA of the gradient NOISE SCALE (critical batch size); the
                                              #   single-iter estimate is high-variance -> smooth it.
     prev_g = None                            # previous iter's full-batch gradient (for cross-iter cosine)
+    from collections import deque             # ROTATION DIAGNOSTIC: is the mean-gradient CIRCLING (orbiting a
+    g_hist = deque(maxlen=9)                  #   region -> no progress) vs TRANSLATING (real descent) vs random?
+    GCOS_LAGS = (1, 2, 4, 8)                  #   gcos at multiple LAGS: circling => sign flips periodically
+    cum_g = None                             #   (goes NEGATIVE near half-period); translating => stays high at
+    cum_gnorm_sum = 0.0                       #   ALL lags. cum ratio R = ||sum_t g_t|| / sum_t ||g_t|| over the
+    #                                          run: R~0 = steps CANCEL (circle/random), R~1 = steps ADD (translate).
     best_reward = -float("inf")              # RESET each run: reward is comparable only within a fixed
                                              #   reward scheme, so "best since THIS run started" (not carried).
     if WARMSTART:                            # ...but seed it with the WARM-START policy's OWN eval so iter 1
@@ -599,6 +606,19 @@ def main():
         else:                                                                 #   ~0 = thrash (noise OR LR overshoot);
             gcos = float("nan")                                               #   >0 = coherent direction
         prev_g = g_full.clone()
+        gcur_norm = float(g_full.norm())                                      # --- ROTATION DIAGNOSTIC ---
+        lag_cos = []                                                          # gcos at lags 1/2/4/8: compare the
+        for lag in GCOS_LAGS:                                                 #   current gradient to g_{t-lag}
+            if len(g_hist) >= lag:
+                gp = g_hist[-lag]; den = gcur_norm * float(gp.norm())
+                lag_cos.append(float((g_full * gp).sum() / den) if den > 1e-12 else float("nan"))
+            else:
+                lag_cos.append(float("nan"))
+        gcos_lag_str = "/".join(f"{c:+.2f}" for c in lag_cos)                 # circle => flips -; translate => all +
+        g_hist.append(g_full.clone())
+        cum_g = g_full.clone() if cum_g is None else cum_g + g_full           # cumulative coherence ratio R:
+        cum_gnorm_sum += gcur_norm                                            #   ||sum g|| / sum||g|| over the run
+        cum_R = float(cum_g.norm()) / cum_gnorm_sum if cum_gnorm_sum > 1e-12 else float("nan")
         G_small_sq = gsq / NS                                                 # mean |g_i|^2
         B_small, B_big = (T * N) / NS, float(T * N)
         G2 = (B_big * G_big_sq - B_small * G_small_sq) / (B_big - B_small)    # est |G|^2 (signal)
@@ -640,8 +660,8 @@ def main():
                     consist_lam_log = float(consist_lam.detach())
                 opt_a.zero_grad(); loss_a.backward()
                 nn.utils.clip_grad_norm_(actor.parameters(), MAX_GRAD); opt_a.step()
-                with torch.no_grad():                       # log_std FLOOR: keep exploration std >= 0.25
-                    actor.log_std.clamp_(min=LOG_STD_MIN)   #   (entropy floor ~2.6 on 10-D) so the mean
+                with torch.no_grad():                       # log_std FLOOR: keep exploration std >= 0.32
+                    actor.log_std.clamp_(min=LOG_STD_MIN)   #   (entropy floor ~2.79 on 10-D) so the mean
                     #                                         keeps learning at full LR while the std can't
                     #                                         collapse into premature DET_R plateau.
 
@@ -673,6 +693,7 @@ def main():
         bnr = f"{b_noise / N:.0f}" if np.isfinite(b_noise) else "nan"        # RAW per-iter (EMA can hide bounce)
         print(f"iter {it:3d}  team_ep_R {mean_ep_r:9.2f}  sampled_loop {mean_loop:.3f}{det_str}  "
               f"| critic_loss {loss_c.item():.3f}  EV {ev:+.2f}  critB {bn_str}(raw {bnr})  gcos {gcos:+.2f}  gnorm {gnorm:.2e}  "
+              f"gcos@1/2/4/8 {gcos_lag_str}  R {cum_R:+.3f}  "
               f"ent {ent.item():.3f}{blow_str}  | {dt:.1f}s (coll {t_coll:.1f} upd {t_update:.1f})")
     except KeyboardInterrupt:
         print(f"\n[interrupted at iter {it}] -> terminating workers + saving resume checkpoint")
