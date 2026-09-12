@@ -12,7 +12,7 @@
 #SBATCH --mem=96G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
 #                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
 #                                  #   pressure (job COMPLETED, no OOM). node has ~3TB; 96G is comfortable headroom.
-#SBATCH --time=03:00:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
+#SBATCH --time=06:00:00            # wall-clock limit; job KILLED at this. 40 iters ~1.5h + startup -> 2h is enough.
 #                                  #   SHORT time = better BACKFILL: SLURM slots you onto an idle node before a
 #                                  #   higher-priority reservation, instead of waiting behind it (fixes PD (Priority)).
 #SBATCH --output=f2_%j.log         # stdout (iter prints) -> here.  watch live:  tail -f f2_<jobid>.log

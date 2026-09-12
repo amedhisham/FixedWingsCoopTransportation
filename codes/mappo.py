@@ -152,7 +152,7 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
 # to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
 UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
-WARMSTART = "residual_mappo_overfit.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
+WARMSTART = "residual_mappo_overfit_xyz_2trj_ch.pt"   # gt2_wide function-preservingly WIDENED to hidden (256,256)
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
