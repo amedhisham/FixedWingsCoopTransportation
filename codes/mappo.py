@@ -84,6 +84,7 @@ MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). P
     ("+x+y+z",   (1.0,  1.0,  0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
     ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
     ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows here (user-measured 2026-09-13): |move|~25.7m
+    ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),     # base blows here (user-measured 2026-09-13): |move|~19.6m
 ]
 def _mix_norm(e):                      # expand (label,dir[,scale,ramp]) -> (label, dir_arr, scale, ramp)
     label, d = e[0], np.asarray(e[1], float)

@@ -6,7 +6,7 @@ metadata:
   type: project
 ---
 
-**STATUS: DESIGN DISCUSSION — user thinking about the lane anchor before wiring. This is the experiment AFTER the [[f2-speed-binding-axis]] per-direction-SCALE run (which is READY + launches first). NOT yet implemented.**
+**STATUS: DESIGN DISCUSSION — user thinking about the lane anchor before wiring. This is the experiment AFTER the [[f2-speed-binding-axis]] per-direction-SCALE run (which is READY + launches first). NOT yet implemented.** PAIRED with [[f2-scale-invariant-obs]] — user grouped both as the "next reformulation" pile to design in ONE joint pass (both are obs/reward reformulations, both from-scratch-ish, think about interactions e.g. the reward's absolute expert_pos term overlaps the obs's absolute-pos issue).
 
 **DECISIONS TO NAIL (open):** (1) LANE ANCHOR — box around clean reference attachment `p_d+R_d@Bb[i]` (my recommendation) vs box around expert_pos[i][idx] deadband vs something else; (2) lane SHAPE + SIZE (ball vs axis-aligned box; half-width ~ loiter radius + margin — needs a number); (3) SMOOTHNESS term form — start uncapped frozen-log_std jerk, or go straight to Δ||v|| speed-2nd-diff + heading-rate-change (~0 for a smooth orbit); (4) curriculum: anneal manifold_w->0 rate + smoothness ramp-in; (5) whether to run the cheap diagnostic rollout first to confirm the jumps are manifold-phase-catchup (vs speed-band edges / delay lag). SETTLED: reward = LANE(box) + self-smoothness(frozen log_std) + load + optional leak_w; manifold REMOVED; NO loop-curve, NO noisy-load anchor; acceptance = load stable + drones in lane + smooth motion.
 
