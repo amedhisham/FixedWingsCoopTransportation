@@ -1,0 +1,33 @@
+  built mix dir +x+y+z   |move|=5.0m ramp 16s  dpos (4, 1800, 3)
+  built mix dir +x+y-z   |move|=5.0m ramp 16s  dpos (4, 1800, 3)
+baseline DET_R -0.3905  loop 0.4337  per {'+x+y+z': 0.4367310848210547, '+x+y-z': 0.4307541291107569}
+running 3 real training iters (STEPS=1400000, 93 workers) to build the direction...
+  iter 1: DET_R -0.3958  loop 0.4363  (sampled_loop 0.447)  217s
+  iter 2: DET_R -0.3962  loop 0.4368  (sampled_loop 0.449)  267s
+  iter 3: DET_R -0.4004  loop 0.4369  (sampled_loop 0.449)  259s
+
+||d_inst|| (1 iter) = 1.9574e+00   ||d_net|| (3 iters) = 3.3170e+00
+
+=== line-search along d_net  (rotation-averaged, K iters) ===
+alpha   DET_R      loop     blow
+  0.0  -0.3905   0.4337   0
+  0.5  -0.3906   0.4346   0
+  1.0  -0.4041   0.4403   0  <- = the real training move
+  2.0  -0.4086   0.4404   0
+  4.0  -0.4393   0.4523   0
+  8.0  -0.5717   0.5025   0
+ 16.0  -2.6841   0.7840   0
+ 32.0  -24.7251   0.9244   0
+
+=== line-search along d_inst (one iter, has rotation) ===
+alpha   DET_R      loop     blow
+  0.0  -0.3905   0.4337   0
+  0.5  -0.3915   0.4350   0
+  1.0  -0.3954   0.4349   0  <- = the real training move
+  2.0  -0.3941   0.4360   0
+  4.0  -0.4174   0.4450   0
+  8.0  -0.4555   0.4580   0
+ 16.0  -0.6202   0.5114   0
+ 32.0  -5.1623   0.8936   0
+
+done; actor restored to baseline.
