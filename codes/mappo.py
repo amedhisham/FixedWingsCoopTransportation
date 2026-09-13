@@ -74,19 +74,23 @@ OVERFIT = True
 # wall is the incentive trap (blow-ups late -> more punishment). Nothing blows at scale 5 from ch5, so it's
 # feasible as-is; RATCHET MIX_SCALE up once loops settle. Each direction is a rest-to-rest quintic (gentle
 # 5th-order, ramp MIX_RAMP) rolled to the SHORT move-horizon (HOLD+RAMP+margin) — no wasted static-hold tail.
-MIX_DIRS = [                           # (label, unit move direction). scale via MIX_SCALE.
-    # CURRICULUM: solve ONE on the FULL batch first (no batch-splitting), save, then re-add the second
-    # and WARM-START the 2-traj from the solved net (they co-learn -> the 2nd comes up fast).
-    ("+x+y+z", (1.0,  1.0,  0.5)),
-    ("+x+y-z", (1.0,  1.0, -0.5)),   # 2-traj phase: added on top of the solved +x+y+z net (warm-started)
-    ("+.2x-y-z", (0.2, -1.0, -1.0)), # 3rd traj (2026-09-13): BRAVE off-axis dir (mostly -y-z, unseen) to push
-    #                                  real generalization. PRE-FLIGHT checked for blowup from the -0.38 warm
-    #                                  start; DROP MIX_SCALE (global) if it blows.
+MIX_SCALE = 5.0                        # DEFAULT displacement scale (m) for any 2-tuple MIX_DIRS entry (per-dir overrides).
+MIX_RAMP = 16.0                        # DEFAULT quintic move duration (s) for 2-tuple entries.
+MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). PER-DIRECTION scale/ramp: the BASE
+    # blows at a DIRECTION-DEPENDENT (scale, ramp) frontier (measured via scale_test) -> a single global scale
+    # can't difficulty-match the dirs. Set each near ITS OWN base-blow frontier so the base FAILS and the RL
+    # policy must survive = the showable base-vs-RL comparison ([[f2-speed-binding-axis]]). Entries: 2-tuple
+    # (label, dir) -> falls back to MIX_SCALE/MIX_RAMP; or 4-tuple (label, dir, scale, ramp) with explicit values.
+    ("+x+y+z",   (1.0,  1.0,  0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
+    ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
+    ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows here (user-measured 2026-09-13): |move|~25.7m
 ]
-MIX_SCALE = 5.0                        # displacement magnitude (m) along each dir. DROP if any member blows.
-MIX_RAMP = 16.0                        # quintic move duration (s); gentle.
-OVERFIT_END = HOLD + MIX_RAMP + 1.0    # ~18 s: end just after the move completes (matches scale_test) — the
-                                       # move is done at HOLD+RAMP; no point simulating a long static hold.
+def _mix_norm(e):                      # expand (label,dir[,scale,ramp]) -> (label, dir_arr, scale, ramp)
+    label, d = e[0], np.asarray(e[1], float)
+    return label, d, float(e[2]) if len(e) > 2 else MIX_SCALE, float(e[3]) if len(e) > 3 else MIX_RAMP
+MIX = [_mix_norm(e) for e in MIX_DIRS]                # normalized per-direction (label, dir, scale, ramp)
+OVERFIT_END = HOLD + max(rp for _, _, _, rp in MIX) + 1.0   # horizon covers the LONGEST move; shorter-ramp dirs
+                                       # finish early then hold (mixed ramps -> some static-hold tail is unavoidable).
 # Delay CEILING = 2 for ALL drones, EVERY episode, train AND eval (was a per-episode random {0,1,2}
 # ceiling in training + [1,2,2,1] in eval -> inconsistent, and some drones near-synchronous). Now the
 # actual per-step delay is a uniform 0-1-2 random walk on every drone; variety comes from the WALK
@@ -424,10 +428,10 @@ def build_pairs(dpos_list=None):
     workers), REUSE it and rebuild only the CHEAP traj closures -> skips the per-worker redundant CasADi
     rollout (OVERFIT) / npz load (TRAJ_RANDOMIZE). dpos_list=None -> full build (main / sequential path)."""
     if OVERFIT:
-        trajs = [make_quintic_pose(MIX_SCALE * np.asarray(d, float), np.zeros(3), ramp=MIX_RAMP,
-                                   hold=HOLD, base_pos=np.asarray(BASE_POS, float)) for _, d in MIX_DIRS]
-        if dpos_list is None:
-            dpos_list = [expert_path(t, OVERFIT_END)[0] for t in trajs]   # CasADi — MAIN only
+        trajs = [make_quintic_pose(sc * d, np.zeros(3), ramp=rp,
+                                   hold=HOLD, base_pos=np.asarray(BASE_POS, float)) for _, d, sc, rp in MIX]
+        if dpos_list is None:                                # PER-DIR horizon (ref length -> per-episode truncation)
+            dpos_list = [expert_path(t, HOLD + rp + 1.0)[0] for (_, _, _, rp), t in zip(MIX, trajs)]   # CasADi — MAIN only
         return list(zip(trajs, dpos_list)), len(trajs)
     if TRAJ_RANDOMIZE:
         if dpos_list is None:
@@ -441,17 +445,18 @@ def build_pairs(dpos_list=None):
 
 def overfit_set():
     """FEASIBLE-task curriculum RUNG 3 (MIX): a small set of movement DIRECTIONS trained JOINTLY -> the
-    generalization vehicle. Each dir is a rest-to-rest quintic (MIX_SCALE m, ramp MIX_RAMP, held to T_END via
-    expert_path); train samples them uniformly, eval scores EVERY member. Feasibility is on YOU: gentle MIX_SCALE
-    until nothing blows from WARMSTART, then ratchet. Returns (train_pairs, eval_scen)."""
+    generalization vehicle. Each dir is a rest-to-rest quintic (PER-DIRECTION scale/ramp from MIX, held via
+    expert_path); train samples them uniformly, eval scores EVERY member. Feasibility is on YOU: scale each dir
+    near ITS OWN base-blow frontier but survivable from WARMSTART (pre-flight check). Returns (train_pairs, eval_scen)."""
     train, ev = [], []
-    for label, d in MIX_DIRS:
-        traj = make_quintic_pose(MIX_SCALE * np.asarray(d, float), np.zeros(3), ramp=MIX_RAMP,
+    for label, d, sc, rp in MIX:
+        traj = make_quintic_pose(sc * d, np.zeros(3), ramp=rp,
                                  hold=HOLD, base_pos=np.asarray(BASE_POS, float))
-        dpos, _, _ = expert_path(traj, OVERFIT_END)          # CasADi rollout to the SHORT move-horizon
+        dpos, _, _ = expert_path(traj, HOLD + rp + 1.0)      # PER-DIR horizon: ref length -> per-episode truncation
+                                                             # (env truncates when the reference is exhausted)
         train.append((traj, dpos))
         ev.append((label, traj, dpos))
-        print(f"  built mix dir {label:<8} |move|={MIX_SCALE:.1f}m ramp {MIX_RAMP:.0f}s  dpos {dpos.shape}",
+        print(f"  built mix dir {label:<8} |move|={sc*np.linalg.norm(d):5.1f}m (scale {sc:.1f}) ramp {rp:4.0f}s  dpos {dpos.shape}",
               flush=True)
     return train, ev
 
@@ -470,7 +475,7 @@ def main():
         pairs, eval_scen = overfit_set()
         n_anchor = len(pairs)            # all pairs are "anchors" -> uniform sampling of the fixed set every ep
         print(f"OVERFIT (feasible curriculum RUNG 3 MIX): warm={WARMSTART}  "
-              f"{len(pairs)} dirs @ {MIX_SCALE:.1f}m  horizon={OVERFIT_END:.0f}s  "
+              f"{len(pairs)} dirs @ per-dir scale/ramp  horizon={OVERFIT_END:.0f}s  "
               f"(saves -> residual_mappo_overfit*.pt)")
     elif TRAJ_RANDOMIZE:
         pairs, n_anchor = training_pairs()   # (traj, expert_dpos) per traj

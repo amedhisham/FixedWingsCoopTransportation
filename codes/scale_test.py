@@ -20,14 +20,14 @@ from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo_overfit_xyz_1trj_ch2.pt"          # change to the policy you want to test
-SCALES = [15.0]      # +x displacement (m)
+CKPT = "residual_mappo_overfit.pt"          # change to the policy you want to test
+SCALES = [16.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
 RAMP = 48.0                          # quintic move duration (s)
 END_TIME = HOLD + RAMP + 1        # episode horizon: cover hold + full move + tail (was hard-capped at T_END=35!)
 GRACE = 20
 DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
-MOVE_DIR = (1.0, 1.0, 0.5)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
+MOVE_DIR = (0.5, 0.5, 1.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
 USE_CUSTOM = False                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
 CUSTOM_IDX = 0                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
                                      #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.

@@ -622,6 +622,9 @@ class ResidualMARLEnv(ParallelEnv):
         obs42, _, _, truncated, _ = self.plant.step(np.concatenate([ff, deriv]))
         self.t += self.dt
         self._step += 1
+        if self.expert_pos is not None and self._step >= self.expert_pos.shape[1] - 1:
+            truncated = True          # PER-EPISODE horizon: reference exhausted -> truncate here (FMU end_time is
+                                      #   the LONGEST horizon so it never truncates first; ref length sets the rest)
 
         # --- 4b. Blowup guard: a bad exploration action can collapse tension -> velocity
         #        explodes -> NaN state -> the NEXT step's reconstruct SVD throws and kills the
