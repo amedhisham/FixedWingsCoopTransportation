@@ -1,0 +1,21 @@
+  built mix dir +x+y+z   |move|= 15.0m (scale 10.0) ramp   29s  dpos (4, 3100, 3)
+  built mix dir +x+y-z   |move|= 15.0m (scale 10.0) ramp   29s  dpos (4, 3100, 3)
+  built mix dir +.2x-y-z |move|= 25.7m (scale 18.0) ramp   52s  dpos (4, 5400, 3)
+OVERFIT (feasible curriculum RUNG 3 MIX): warm=residual_mappo_overfit.pt  3 dirs @ per-dir scale/ramp  horizon=54s  (saves -> residual_mappo_overfit*.pt)
+eval on 3 trajs ['+x+y+z', '+x+y-z', '+.2x-y-z'] (mean = best-net selection metric)
+actor warm-started from residual_mappo_overfit.pt (+ its obs normalization + critic)
+warm-start baseline DET_R -1.270 (seeded best; saves only if beaten)
+PARALLEL collection: 93 worker processes (~15053 steps each)
+main-process torch threads = 32 (SERIAL update; workers pinned to 1)
+iter   1  team_ep_R -102375.34  sampled_loop 0.880  DET_R -1.291  loop 0.722 [+x+y 0.711 +x+y 0.725 +.2x 0.728]  load 0.132  vmin 0.029  stall% 2.7  swing 0.256  coord 0.387  satL 0.10  satW 0.75  gap +0.159  | critic_loss 0.687  EV +0.70  critB 6110480(raw 6110480)  gcos +nan  gnorm 1.35e-01  gcos@1/2/4/8 +nan/+nan/+nan/+nan  R +1.000  ent 4.163  blowups 42  | 148.0s (coll 109.4 upd 28.6)
+iter   2  team_ep_R -101046.07  sampled_loop 0.896  | critic_loss 0.792  EV +0.85  critB 5982430(raw 4829982)  gcos -0.26  gnorm 1.59e-01  gcos@1/2/4/8 -0.26/+nan/+nan/+nan  R +0.611  ent 4.133  blowups 39  | 156.3s (coll 118.3 upd 28.4)
+iter   3  team_ep_R -103390.84  sampled_loop 0.872  | critic_loss 1.369  EV +0.90  critB 6316146(raw 9319586)  gcos -0.29  gnorm 1.29e-01  gcos@1/2/4/8 -0.29/+0.19/+nan/+nan  R +0.494  ent 4.105  blowups 33  | 153.4s (coll 115.0 upd 29.0)
+iter   4  team_ep_R -107387.07  sampled_loop 0.888  DET_R -1.207  loop 0.721 [+x+y 0.695 +x+y 0.728 +.2x 0.740]  load 0.120  vmin 0.045  stall% 1.8  swing 0.230  coord 0.290  satL 0.09  satW 0.74  gap +0.167  (new best -1.207 -> saved)  | critic_loss 1.538  EV +0.92  critB 5862148(raw 1776170)  gcos +0.10  gnorm 1.70e-01  gcos@1/2/4/8 +0.10/+0.13/+nan/+nan  R +0.513  ent 4.077  blowups 38  | 155.0s (coll 117.5 upd 28.3)
+iter   5  team_ep_R -97853.58  sampled_loop 0.870  | critic_loss 3.084  EV +0.94  critB 5808104(raw 5321710)  gcos -0.08  gnorm 1.43e-01  gcos@1/2/4/8 -0.08/-0.11/+0.01/+nan  R +0.440  ent 4.049  blowups 43  | 150.1s (coll 107.3 upd 33.6)
+iter   6  team_ep_R -94185.69  sampled_loop 0.884  | critic_loss 1.368  EV +0.95  critB 5512864(raw 2855697)  gcos +0.22  gnorm 1.57e-01  gcos@1/2/4/8 +0.22/-0.15/+0.45/+nan  R +0.398  ent 4.020  blowups 43  | 152.7s (coll 114.6 upd 28.2)
+iter   7  team_ep_R -98476.87  sampled_loop 0.865  | critic_loss 1.687  EV +0.96  critB 5616557(raw 6549799)  gcos +0.18  gnorm 1.45e-01  gcos@1/2/4/8 +0.18/+0.12/-0.20/+nan  R +0.389  ent 3.979  blowups 31  | 158.5s (coll 120.4 upd 28.8)
+iter   8  team_ep_R -100753.31  sampled_loop 0.889  DET_R -4.165  loop 0.865 [+x+y 1.151 +x+y 0.712 +.2x 0.731]  load 0.239  vmin 0.057  stall% 2.5  swing 0.515  coord 1.152  satL 0.11  satW 0.78  gap +0.024  | critic_loss 1.658  EV +0.96  critB 6216029(raw 11611272)  gcos +0.21  gnorm 1.44e-01  gcos@1/2/4/8 +0.21/+0.35/+0.17/+nan  R +0.401  ent 3.943  blowups 40  | 148.0s (coll 110.0 upd 28.9)
+
+[interrupted at iter 9] -> terminating workers + saving resume checkpoint
+best (deploy) -> residual_mappo.pt (BEST DET_R -1.207);  resume -> residual_mappo_last.pt
+saved mappo_training_4963030.png
