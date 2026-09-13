@@ -155,7 +155,13 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
 # to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
 UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
-WARMSTART = "residual_mappo_overfit_interp075.pt"   # the -0.380 net (interp of the 2-traj spiral endpoints,
+RESUME_OPT = False   # True + WARMSTART = a *_last.pt with Adam moments -> TRUE mid-streak resume: restore
+#   opt_a/opt_c state + iteration count + the SAVED log_std (no re-init) so a run that was still descending
+#   (or Ctrl-C'd mid-streak) continues with momentum intact. False (default) = cold-restart Adam from the
+#   WARMSTART weights (use residual_mappo_overfit.pt = BEST when there was NO end-streak). ITERS then means
+#   "this many MORE iters"; logs keep numbering from where the saved run stopped. Old *_last.pt without opt
+#   state still load (falls back to cold Adam + a warning). See [[f2-mix-curriculum]].
+WARMSTART = "residual_mappo_overfit.pt"   # the -0.380 net (interp of the 2-traj spiral endpoints,
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
@@ -495,13 +501,24 @@ def main():
         om, os_ = estimate_norm(env, rng, pairs)   # base-rollout norm over SAMPLED trajs (covers desired-state)
         print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
     om_t = torch.tensor(om, device=DEVICE); os_t = torch.tensor(os_, device=DEVICE)
-    actor.log_std.data.fill_(LOG_STD_INIT)      # set exploration scale (overrides warm-start's)
+    resuming = bool(WARMSTART and RESUME_OPT)   # true mid-streak resume -> keep the SAVED (annealed) log_std
+    if not resuming:
+        actor.log_std.data.fill_(LOG_STD_INIT)  # set exploration scale (overrides warm-start's)
     if FREEZE_LOG_STD:                          # DIAGNOSTIC: pin exploration std, exclude it from all gradients
         actor.log_std.data.fill_(LOG_STD_MIN)   #   -> sigma=0.3, ent~2.7 held constant
         actor.log_std.requires_grad_(False)     #   -> grad=None -> gcos/critB/gnorm are MEAN-only from here
         print(f"log_std FROZEN at {LOG_STD_MIN:.3f} (sigma={math.exp(LOG_STD_MIN):.2f}); gradients are mean-only")
     opt_a = torch.optim.Adam(actor.parameters(), lr=LR_ACTOR)
     opt_c = torch.optim.Adam(critic.parameters(), lr=LR_CRITIC)
+    start_iter = 0                              # normal cold-Adam start; resume overrides below
+    if resuming:                               # TRUE mid-streak resume: restore Adam moments + iter count
+        if ck.get("opt_a") is not None and ck.get("opt_c") is not None:
+            opt_a.load_state_dict(ck["opt_a"]); opt_c.load_state_dict(ck["opt_c"])
+            start_iter = int(ck.get("iter_done") or 0)
+            print(f"RESUME_OPT: Adam moments restored, log_std kept at "
+                  f"sigma={math.exp(actor.log_std.data.mean().item()):.3f}; continuing from iter {start_iter}")
+        else:                                  # old checkpoint predates opt-state saving -> can't truly resume
+            print("RESUME_OPT set but WARMSTART has NO optimizer state -> cold Adam (weights + log_std only)")
 
     hist_R, hist_loop = [], []
     hist_det_it, hist_det = [], []
@@ -522,11 +539,16 @@ def main():
         print(f"warm-start baseline DET_R {best_reward:.3f} "     # started -> only genuine improvement saves.
               f"(seeded best; saves only if beaten)")             # apples-to-apples: same eval, same scheme.
 
-    def save_ckpt(path, best):               # full resumable state: actor + critic + norm + best reward
-        torch.save({"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},
-                    "critic_state": {k: v.cpu() for k, v in critic.state_dict().items()},
-                    "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,
-                    "hidden": list(HIDDEN), "best_reward": best}, path)   # self-describing width (loaders infer anyway)
+    def save_ckpt(path, best, save_opt=False, it_done=None):   # actor + critic + norm + best reward; with
+        ck = {"state_dict": {k: v.cpu() for k, v in actor.state_dict().items()},   # save_opt=True ALSO the Adam
+              "critic_state": {k: v.cpu() for k, v in critic.state_dict().items()},  # moments + iter count ->
+              "obs_mean": om, "obs_std": os_, "obs_dim": obs_dim, "act_dim": act_dim,  # a TRUE resume point
+              "hidden": list(HIDDEN), "best_reward": best}   # (log_std lives inside state_dict already). BEST
+        if save_opt:                                         # saves stay lean (deploy/warm-start artifact);
+            ck["opt_a"] = opt_a.state_dict()                 # only *_last carries the optimizer state so a
+            ck["opt_c"] = opt_c.state_dict()                 # still-descending / Ctrl-C'd run resumes with
+            ck["iter_done"] = it_done                        # momentum (RESUME_OPT).
+        torch.save(ck, path)                                 # self-describing width (loaders infer anyway)
 
     collector = None
     it = 0
@@ -542,7 +564,7 @@ def main():
 
       torch.set_num_threads(UPDATE_THREADS)   # main-process update multithreads (workers idle during it) ->
       print(f"main-process torch threads = {torch.get_num_threads()} (SERIAL update; workers pinned to 1)")
-      for it in range(1, ITERS + 1):
+      for it in range(start_iter + 1, start_iter + ITERS + 1):   # resume continues numbering; ITERS = MORE iters
         t0 = time.perf_counter()
         if collector is not None:                          # PARALLEL: workers roll chunks (actor-only)
             (obs_b, act_b, logp_b, state_b, rew_b, done_b, dwstar_b, dlamstar_b,
@@ -704,7 +726,8 @@ def main():
             collector.terminate()     # force-kill workers NOW (don't fall through to close()'s join -> hang)
             collector = None
 
-    save_ckpt("residual_mappo_overfit_last.pt" if OVERFIT else "residual_mappo_last.pt", best_reward)   # LATEST resumable state
+    save_ckpt("residual_mappo_overfit_last.pt" if OVERFIT else "residual_mappo_last.pt", best_reward,
+              save_opt=True, it_done=it)   # LATEST resumable state (+ Adam moments + iter -> RESUME_OPT)
     if collector is not None:
         collector.close()
     env.close()
