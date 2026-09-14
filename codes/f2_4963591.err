@@ -1,0 +1,16 @@
+slurmstepd: error: Detected 1 oom_kill event in StepId=4963591.0. Some of the step tasks have been OOM Killed.
+Process SpawnPoolWorker-32:
+Process SpawnPoolWorker-7:
+Process SpawnPoolWorker-75:
+Process SpawnPoolWorker-85:
+Process SpawnPoolWorker-33:
+Process SpawnPoolWorker-64:
+Process SpawnPoolWorker-70:
+Process SpawnPoolWorker-60:
+Process SpawnPoolWorker-82:
+Process SpawnPoolWorker-36:
+Process SpawnPoolWorker-74:
+Process SpawnPoolWorker-22:
+Process SpawnPoolWorker-66:
+Process SpawnPoolWorker-67:
+srun: error: runner-08: task 0: Out Of Memory

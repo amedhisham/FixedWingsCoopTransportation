@@ -1,0 +1,8 @@
+  built mix dir +x+y+z   |move|= 15.0m (scale 10.0) ramp   29s  dpos (4, 3100, 3)
+OVERFIT (feasible curriculum RUNG 3 MIX): warm=residual_mappo_overfit.pt  1 dirs @ per-dir scale/ramp  horizon=31s  (saves -> residual_mappo_overfit*.pt)
+eval on 1 trajs ['+x+y+z'] (mean = best-net selection metric)
+actor warm-started from residual_mappo_overfit.pt + its obs normalization + critic
+warm-start baseline DET_R -0.814 (seeded best; saves only if beaten)
+PARALLEL collection: 93 worker processes (~64516 steps each)
+main-process torch threads = 64 (SERIAL update; workers pinned to 1)
+iter   1  team_ep_R -103409.08  sampled_loop 0.934  DET_R -0.815  loop 0.695 [+x+y 0.695]  load 0.099  vmin 0.106  stall% 2.0  swing 0.196  coord 0.226  satL 0.10  satW 0.64  gap +0.239  | critic_loss 2.196  EV +0.97  critB 6722474(raw 6722474)  gcos +nan  gnorm 7.05e-02  gcos@1/2/4/8 +nan/+nan/+nan/+nan  R +1.000  ent 4.140  blowups 170  | 626.4s (coll 410.8 upd 180.4)
