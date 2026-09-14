@@ -175,10 +175,14 @@ RENORM_ON_START = False  # WARM-START: re-estimate obs-norm for the CURRENT MIX 
 #   inputs its weights never saw and can BLOW UP the verified flight. Safer to keep the old norm at iter 0 and let
 #   RUNNING_NORM drift it GRADUALLY (the actor adapts as it goes). Flip ON only as a deliberate test. (The machinery
 #   in estimate_norm's actor path stays wired.) Skipped anyway on a true RESUME_OPT mid-streak resume.
-RUNNING_NORM = True      # keep obs-norm TRACKING each iter: EMA-update om/os_ from the collected TRAINING obs
-#   (pooled over steps AND agents = shared stats for the shared actor), rebuild om_t/os_t. Frozen during eval
-#   (eval only reads om/os_). This is the RunningMeanStd the gymnasium NormalizeObservation wrapper does,
-#   done in-house so it works across the ParallelCollector workers + the main-process update site.
+RUNNING_NORM = False     # keep obs-norm TRACKING each iter: EMA-update om/os_ from the collected TRAINING obs
+#   (pooled over steps AND agents), rebuild om_t/os_t. Frozen during eval. In-house RunningMeanStd (the gymnasium
+#   NormalizeObservation wrapper can't fit multi-agent + ParallelCollector + the dual apply-site).
+#   *** OFF (2026-09-14): NAIVE EMA IS POISONED BY BLOWUP OUTLIERS. Exploration blowups emit obs ~1e4-1e6; a raw
+#   batch-std EMA lets ONE iter drag a dim's std 1->hundreds ((1-mom)*huge >> mom*normal), which collapses the
+#   actor's inputs -> more blowups -> runaway (observed: DET_R -0.814 baseline -> -50 iter1, blowups 41->353->494).
+#   For a SINGLE FIXED scale the frozen old norm already FLIES (baseline -0.814) so tracking isn't needed. Before
+#   re-enabling (for multi-scale), HARDEN it: reject outlier steps (mask |(obs-om)/os_| > ~10) from the stat update. ***
 RUNNING_NORM_MOM = 0.99  # EMA momentum: om <- MOM*om + (1-MOM)*batch_mean (gentle ~1%/iter drift under a warm actor).
 WARMSTART = "residual_mappo_overfit.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
 # _best_3trj on the hard-scale eval -> a better START for THIS task, user's call). Its SAVED norm = the OLD norm that
