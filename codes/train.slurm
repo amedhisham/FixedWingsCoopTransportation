@@ -12,9 +12,10 @@
 #SBATCH --mem=256G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
 #                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
 #                                  #   pressure (job COMPLETED, no OOM). node has ~3TB; 96G is comfortable headroom.
-#SBATCH --time=12:00:00            # wall-clock limit; job KILLED at this. 60 iters @ 6M ~ 570s/iter -> ~9.5h + startup.
-#                                  #   SHORT time = better BACKFILL: SLURM slots you onto an idle node before a
-#                                  #   higher-priority reservation, instead of waiting behind it (fixes PD (Priority)).
+#SBATCH --time=30:00:00            # wall-clock limit; job KILLED at this. 150 iters @ 6M ~ 570s/iter -> ~23.75h + startup;
+#                                  #   30h gives headroom (was 12h/60 iters). --signal below saves _last if we overrun.
+#                                  #   NB: long time HURTS backfill (SLURM can't slot you before a reservation) -> expect
+#                                  #   more PD (Priority) queueing. Trade accepted: 150 iters needs the wall.
 #SBATCH --signal=INT@120           # send SIGINT 120s before the walltime kill -> mappo's KeyboardInterrupt saves
 #                                  #   _last (best already saves on improvement). Without this, walltime = SIGTERM = no _last.
 #SBATCH --output=f2_%j.log         # stdout (iter prints) -> here.  watch live:  tail -f f2_<jobid>.log

@@ -107,7 +107,8 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 60                   # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
+ITERS = 150                  # 60 didn't converge the single-dir 10/29 run -> 150 (>24h wall; see train.slurm --time).
+                             # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
                              #   >> 1.4M (6-7x SUBCRITICAL) -> DET_R noise-walked DOWNHILL off the warm start.
                              #   Near-critical updates convert to progress; sub-critical ones waste compute on noise.
 STEPS_PER_ITER = 6_000_000   # ~1.5x subcritical vs critB ~9M (the within-one-walltime sweet spot; true-critical 9M
@@ -144,9 +145,9 @@ FREEZE_LOG_STD = False       # DIAGNOSTIC: fix log_std (requires_grad=False) at 
 HIDDEN = (256, 256)          # actor+critic width — WIDENED 128->256 (function-preserving via widen_hidden.py)
                              #   to give capacity for a direction-dependent residual law vs the jagged
                              #   x-specialized 128-fit (f2-axis-generalization). Must match WARMSTART's hidden.
-EVAL_EVERY = 4               # every N iters, eval the DETERMINISTIC (mean-action) policy on the 2-traj set
-                             #   (line + held-out quintic) -> true loop_dist. Raised 2->4 so the 2-traj mean
-                             #   costs the same total as the old 1-traj eval (representative selection, flat budget).
+EVAL_EVERY = 1               # eval the DETERMINISTIC (mean-action) policy EVERY iter: at ~570s/iter (6M batch)
+                             #   a single-traj eval rollout (~seconds) is negligible, and per-iter DET_R + best-net
+                             #   selection is worth it. (Was 4 when iters were cheap.)
 SEED = 0
 DEVICE = "cpu"                        # tiny nets + sequential rollout -> CPU beats GPU (no per-step transfer)
 NUM_WORKERS = 8                       # PARALLEL collection: 1 = in-process (sequential); >1 = multiprocessing
@@ -188,7 +189,7 @@ RUNNING_NORM = False     # keep obs-norm TRACKING each iter: EMA-update om/os_ f
 #   For a SINGLE FIXED scale the frozen old norm already FLIES (baseline -0.814) so tracking isn't needed. Before
 #   re-enabling (for multi-scale), HARDEN it: reject outlier steps (mask |(obs-om)/os_| > ~10) from the stat update. ***
 RUNNING_NORM_MOM = 0.99  # EMA momentum: om <- MOM*om + (1-MOM)*batch_mean (gentle ~1%/iter drift under a warm actor).
-WARMSTART = "residual_mappo_overfit.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
+WARMSTART = "residual_mappo_overfit_last.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
 # _best_3trj on the hard-scale eval -> a better START for THIS task, user's call). Its SAVED norm = the OLD norm that
 # scale_test verified FLIES the move -> used as-is at iter 0 (RENORM_ON_START off). _best_3trj = the clean -0.421 backup
 # if you want the pristine start instead.
