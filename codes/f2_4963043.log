@@ -1,0 +1,8 @@
+  built mix dir +x+y+z   |move|= 15.0m (scale 10.0) ramp   29s  dpos (4, 3100, 3)
+  built mix dir +x+y-z   |move|= 15.0m (scale 10.0) ramp   29s  dpos (4, 3100, 3)
+  built mix dir +.2x-y-z |move|= 25.7m (scale 18.0) ramp   52s  dpos (4, 5400, 3)
+  built mix dir +.5x+.5y+z |move|= 19.6m (scale 16.0) ramp   48s  dpos (4, 5000, 3)
+OVERFIT (feasible curriculum RUNG 3 MIX): warm=residual_mappo_overfit.pt  4 dirs @ per-dir scale/ramp  horizon=54s  (saves -> residual_mappo_overfit*.pt)
+eval on 4 trajs ['+x+y+z', '+x+y-z', '+.2x-y-z', '+.5x+.5y+z'] (mean = best-net selection metric)
+actor warm-started from residual_mappo_overfit.pt (+ its obs normalization + critic)
+warm-start baseline DET_R -1.407 (seeded best; saves only if beaten)
