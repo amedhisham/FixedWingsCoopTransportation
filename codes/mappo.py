@@ -163,9 +163,10 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # OMP/MKL_NUM_THREADS=1 (needed so 90 workers don't oversubscribe during collection) would otherwise pin the
 # update to a SINGLE core -> ~3x slower than a laptop that lets torch use many cores. torch.set_num_threads()
 # (called in main() below) overrides that env cap at runtime for the main process's torch ops. Tune via env
-# (train.slurm exports 64 for the 6M-batch run). With the big MINIBATCH (8192) the matmuls are large enough
-# to scale well past 32; watch NUMA (runner-08 is multi-socket) -> past ~1 socket's cores more can stop helping.
-UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 64)))
+# (train.slurm exports 24 for the 6M-batch run). runner-08 = 4 NUMA nodes x 24 cores; the PPO update is memory-
+# bandwidth-bound, so threads must stay WITHIN ONE NUMA node (24) -> 64 spanned ~3 nodes and cross-node fetches
+# dragged upd 28s->180s. 24 = one node = clean. (To use more cores: numactl --interleave=all + more threads.)
+UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 24)))
 RESUME_OPT = False   # True + WARMSTART = a *_last.pt with Adam moments -> TRUE mid-streak resume: restore
 #   opt_a/opt_c state + iteration count + the SAVED log_std (no re-init) so a run that was still descending
 #   (or Ctrl-C'd mid-streak) continues with momentum intact. False (default) = cold-restart Adam from the

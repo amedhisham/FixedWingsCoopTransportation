@@ -9,10 +9,10 @@
 #                                  #   job silently falls through to runner-11 (192c) instead of pinning here.
 #SBATCH --nodelist=runner-08       # idle 96-core node (CPUAlloc=0, ~3TB RAM) -> clean unshared run.
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
-#SBATCH --mem=96G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
+#SBATCH --mem=256G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
 #                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
 #                                  #   pressure (job COMPLETED, no OOM). node has ~3TB; 96G is comfortable headroom.
-#SBATCH --time=11:00:00            # wall-clock limit; job KILLED at this. 60 iters @ 6M ~ 570s/iter -> ~9.5h + startup.
+#SBATCH --time=12:00:00            # wall-clock limit; job KILLED at this. 60 iters @ 6M ~ 570s/iter -> ~9.5h + startup.
 #                                  #   SHORT time = better BACKFILL: SLURM slots you onto an idle node before a
 #                                  #   higher-priority reservation, instead of waiting behind it (fixes PD (Priority)).
 #SBATCH --signal=INT@120           # send SIGINT 120s before the walltime kill -> mappo's KeyboardInterrupt saves
@@ -25,8 +25,9 @@
 # --- run hygiene (mandatory at high core counts) ---
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1   # stop N-workers x N-BLAS-threads = N^2 oversubscription
 export MPLBACKEND=Agg               # headless matplotlib (no $DISPLAY on compute nodes); plt.show() is auto-skipped
-export UPDATE_THREADS=64            # main-process PPO update thread count (workers stay pinned to 1). Big minibatch
-#                                  #   (8192) makes 64 worthwhile; watch NUMA past ~1 socket's cores. Overrides the code default.
+export UPDATE_THREADS=24            # main-process PPO update thread count (workers stay pinned to 1). runner-08 =
+#                                  #   4 NUMA nodes x 24c; the bandwidth-bound update must stay in ONE node (64 spanned
+#                                  #   ~3 -> upd 28s->180s). 24 = one node = clean. Overrides the code default.
 
 cd "$SLURM_SUBMIT_DIR"              # submit from codes/ so relative paths (Base_Model.fmu, *.npz, *.pt) resolve
 source ~/venvs/fixedwings-linux/bin/activate    # NO `module load` — DEI has none; system py3.12 + our venv
