@@ -107,15 +107,18 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 150                  # big-batch test run (was 10). Near-critical batch -> expect a CLEAN descent in
-                             #   far fewer iters than the laptop's ~300-iter noise-crawl. Extend if promising.
-STEPS_PER_ITER = 1_400_000   # big-batch target (manual; tune freely). Rolls WHOLE episodes -> with 90 workers
-                             #   this rounds up to 8 eps/worker (~1.296M actual). Millions-scale = the critical
-                             #   batch the noise diagnostic demands. Episode = 1800 steps (18s OVERFIT / 0.01 dt).
+ITERS = 60                   # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
+                             #   >> 1.4M (6-7x SUBCRITICAL) -> DET_R noise-walked DOWNHILL off the warm start.
+                             #   Near-critical updates convert to progress; sub-critical ones waste compute on noise.
+STEPS_PER_ITER = 6_000_000   # ~1.5x subcritical vs critB ~9M (the within-one-walltime sweet spot; true-critical 9M
+                             #   would be ~37 iters/7.5h). Rolls WHOLE episodes; single-dir 31s episode = 3100 steps
+                             #   (0.01 dt) -> ~1935 eps/iter, ~21/worker at 93. WATCH critB: if it climbs past ~9M
+                             #   bump again or ladder the scale ([[f2-speed-binding-axis]]). Was 1.4M (subcritical).
 REWARD_SCALE = 0.01          # scale raw rewards (~ -18000/ep) so critic targets are O(100); reporting stays RAW
 EPOCHS = 4                   # big-batch: fewer reuse passes than the old 8 (update scales EPOCHS x steps/minibatch)
-MINIBATCH_STEPS = 4096       # minibatch size in ENV STEPS (each expands to N agent samples). Raised 512->4096:
-                             #   bigger matmuls -> fewer python iterations AND the update actually scales with threads
+MINIBATCH_STEPS = 8192       # minibatch size in ENV STEPS (each expands to N agent samples). 4096->8192 for the
+                             #   6M batch: bigger matmuls (8192*N rows) feed the 64 update threads + fewer python
+                             #   iterations. Fine optimization-wise at this near-critical batch (16384 = marginal gain).
 GAMMA = 0.99
 LAMBDA = 0.95
 CLIP = 0.2
@@ -160,9 +163,9 @@ if _slurm_cpus:                                       #   Reserve ONE core for t
 # OMP/MKL_NUM_THREADS=1 (needed so 90 workers don't oversubscribe during collection) would otherwise pin the
 # update to a SINGLE core -> ~3x slower than a laptop that lets torch use many cores. torch.set_num_threads()
 # (called in main() below) overrides that env cap at runtime for the main process's torch ops. Tune via env
-# (train.slurm exports 32 for the big-batch run). With the big MINIBATCH (4096) the matmuls are large enough
-# to scale past 16; watch NUMA past ~24/socket (runner nodes are multi-socket) -> more can stop helping.
-UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 32)))
+# (train.slurm exports 64 for the 6M-batch run). With the big MINIBATCH (8192) the matmuls are large enough
+# to scale well past 32; watch NUMA (runner-08 is multi-socket) -> past ~1 socket's cores more can stop helping.
+UPDATE_THREADS = int(os.environ.get("UPDATE_THREADS", min(NUM_WORKERS, 64)))
 RESUME_OPT = False   # True + WARMSTART = a *_last.pt with Adam moments -> TRUE mid-streak resume: restore
 #   opt_a/opt_c state + iteration count + the SAVED log_std (no re-init) so a run that was still descending
 #   (or Ctrl-C'd mid-streak) continues with momentum intact. False (default) = cold-restart Adam from the
