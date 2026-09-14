@@ -82,8 +82,11 @@ MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). P
     # policy must survive = the showable base-vs-RL comparison ([[f2-speed-binding-axis]]). Entries: 2-tuple
     # (label, dir) -> falls back to MIX_SCALE/MIX_RAMP; or 4-tuple (label, dir, scale, ramp) with explicit values.
     ("+x+y+z",   (1.0,  1.0,  0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
-    ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
-    ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows here (user-measured 2026-09-13): |move|~25.7m
+    # ONE-BY-ONE (2026-09-14): 3 hard scales together diverged (subcritical batch + off-dist frozen norm). Training
+    # a SINGLE hard direction -> 1.4M steps/task (~3x density), critB drops, correct re-estimated norm. Re-enable
+    # the others (warm-start chain or mix) once this one lands past base-blow. [[f2-speed-binding-axis]]
+    # ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # base-blow ~10m/29s |move|~15m — PARKED for one-by-one
+    # ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows (user-measured): |move|~25.7m — PARKED
     # ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),   # 4th traj — parked; sticking to the original 3 for now
 ]
 def _mix_norm(e):                      # expand (label,dir[,scale,ramp]) -> (label, dir_arr, scale, ramp)
@@ -166,7 +169,22 @@ RESUME_OPT = False   # True + WARMSTART = a *_last.pt with Adam moments -> TRUE 
 #   WARMSTART weights (use residual_mappo_overfit.pt = BEST when there was NO end-streak). ITERS then means
 #   "this many MORE iters"; logs keep numbering from where the saved run stopped. Old *_last.pt without opt
 #   state still load (falls back to cold Adam + a warning). See [[f2-mix-curriculum]].
-WARMSTART = "residual_mappo_overfit.pt"   # the -0.380 net (interp of the 2-traj spiral endpoints,
+RENORM_ON_START = False  # WARM-START: re-estimate obs-norm for the CURRENT MIX scale at run start (roll the warm
+#   mean-policy under the OLD norm, return fresh stats). OFF by default: scale_test confirms the net FLIES the move
+#   under the OLD norm, but the NEW norm is UNTESTED -> a start-time step-change in the norm feeds the warm actor
+#   inputs its weights never saw and can BLOW UP the verified flight. Safer to keep the old norm at iter 0 and let
+#   RUNNING_NORM drift it GRADUALLY (the actor adapts as it goes). Flip ON only as a deliberate test. (The machinery
+#   in estimate_norm's actor path stays wired.) Skipped anyway on a true RESUME_OPT mid-streak resume.
+RUNNING_NORM = True      # keep obs-norm TRACKING each iter: EMA-update om/os_ from the collected TRAINING obs
+#   (pooled over steps AND agents = shared stats for the shared actor), rebuild om_t/os_t. Frozen during eval
+#   (eval only reads om/os_). This is the RunningMeanStd the gymnasium NormalizeObservation wrapper does,
+#   done in-house so it works across the ParallelCollector workers + the main-process update site.
+RUNNING_NORM_MOM = 0.99  # EMA momentum: om <- MOM*om + (1-MOM)*batch_mean (gentle ~1%/iter drift under a warm actor).
+WARMSTART = "residual_mappo_overfit.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
+# _best_3trj on the hard-scale eval -> a better START for THIS task, user's call). Its SAVED norm = the OLD norm that
+# scale_test verified FLIES the move -> used as-is at iter 0 (RENORM_ON_START off). _best_3trj = the clean -0.421 backup
+# if you want the pristine start instead.
+# --- stale provenance below (kept for context): the -0.380 net (interp of the 2-traj spiral endpoints,
 # (widen_hidden.py). Carries the exact gt2_wide map at init (new units zero-influence) + its warm critic.
 # Original note below (gt2_wide provenance): iter-144 of the dw-consistency run: KEEPS the dw descent (consist ~0.11,
 # at its estimable floor) so we don't re-pay the slow 144-iter climb. Also carries the DECAYED dlam head
@@ -214,13 +232,17 @@ def compute_gae(rew, val, done, gamma, lam):
     return adv, ret
 
 
-def estimate_norm(env, rng, pairs, n_traj=6):
+def estimate_norm(env, rng, pairs, n_traj=6, actor=None, om0=None, os0=None):
     """Obs mean/std from BASE (zero-residual) rollouts across a SAMPLE of trajectories -- NOT just the
     default line. CRUCIAL for the DESIRED-STATE obs dims: they are EXACTLY constant on the line (y/z/roll/
     pitch/omega -> std~0), so line-only normalization made those dims ~1e6 on quintics (net garbage -> the
     quintic THRASH). Sampling quintics gives them real spread. ZERO action so episodes survive the FULL
     trajectory -> the MOVED desired-state (t~20-30s) is covered; sensing noise + base dynamics spread the
-    rest. (Random actions would blow up early -> only cover t~0 -> wouldn't fix the moved-reference dims.)"""
+    rest. (Random actions would blow up early -> only cover t~0 -> wouldn't fix the moved-reference dims.)
+    WARM-START RE-NORM (actor given): roll the DETERMINISTIC mean policy (obs normalized by the OLD om0/os0)
+    instead of zero residual -> covers the FULL trajectory even at scales where the BASE alone blows up (the
+    base-blow frontier we deliberately train at), so the fresh norm spans the moved-reference dims. The old
+    norm is only used to DRIVE the warm actor here; the returned stats are computed from the RAW obs it visits."""
     agents = env.possible_agents
     ad = env._act_space.shape[0]
     zero = {a: np.zeros(ad, np.float32) for a in agents}
@@ -231,7 +253,14 @@ def estimate_norm(env, rng, pairs, n_traj=6):
         env.ctrl_delay = np.asarray(FIXED_DELAYS, dtype=int)
         obs, _ = env.reset(seed=int(rng.integers(1 << 30)))
         while env.agents:
-            obs, *_ = env.step(zero)
+            if actor is None:
+                act = zero
+            else:                                            # warm-policy rollout (full-trajectory coverage)
+                oa = np.stack([obs[a] for a in agents]).astype(np.float32)
+                with torch.no_grad():
+                    mean = actor(torch.tensor(((oa - om0) / os0).astype(np.float32), device=DEVICE)).cpu().numpy()
+                act = {a: mean[i] for i, a in enumerate(agents)}
+            obs, *_ = env.step(act)
             for a in agents:
                 buf.append(obs[a])
     arr = np.asarray(buf, dtype=np.float32)
@@ -496,13 +525,18 @@ def main():
         ck = torch.load(WARMSTART, map_location=DEVICE, weights_only=False)
         actor.load_state_dict(ck["state_dict"])
         om = ck["obs_mean"].astype(np.float32); os_ = ck["obs_std"].astype(np.float32)
+        if RENORM_ON_START and not RESUME_OPT:               # re-estimate norm for the CURRENT scale (warm-policy
+            om, os_ = estimate_norm(env, rng, pairs, actor=actor, om0=om, os0=os_)   # rollout, old norm drives actor)
+            renorm_msg = " + obs-norm RE-ESTIMATED for current scale (warm-policy rollout)"
+        else:
+            renorm_msg = " + its obs normalization"
         crit_msg = ""
         if ck.get("critic_state") is not None:               # warm critic too (avoids the value re-learn dip)
             try:
                 critic.load_state_dict(ck["critic_state"]); crit_msg = " + critic"
             except RuntimeError:                             # dim changed (e.g. privileged-delays critic) -> reinit
                 crit_msg = " + critic REINIT (state_dim changed)"
-        print(f"actor warm-started from {WARMSTART} (+ its obs normalization{crit_msg})")
+        print(f"actor warm-started from {WARMSTART}{renorm_msg}{crit_msg}")
     else:
         om, os_ = estimate_norm(env, rng, pairs)   # base-rollout norm over SAMPLED trajs (covers desired-state)
         print(f"obs normalization estimated from a random rollout ({obs_dim}-D)")
@@ -580,6 +614,13 @@ def main():
             (obs_b, act_b, logp_b, state_b, rew_b, done_b, dwstar_b, dlamstar_b,
              ep_rews, ep_loops, n_blowups) = collect_chunk(env, actor, om, os_, pairs, n_anchor,
                                                            STEPS_PER_ITER, rng)
+        if RUNNING_NORM:                                   # EMA-track obs-norm on the TRAINING obs (pooled over
+            flat = obs_b.reshape(-1, obs_dim)              #   steps AND agents -> shared stats for the shared actor)
+            b_mean = flat.mean(0, keepdims=True).astype(np.float32)
+            b_std = (flat.std(0, keepdims=True) + 1e-6).astype(np.float32)
+            om = (RUNNING_NORM_MOM * om + (1.0 - RUNNING_NORM_MOM) * b_mean).astype(np.float32)
+            os_ = (RUNNING_NORM_MOM * os_ + (1.0 - RUNNING_NORM_MOM) * b_std).astype(np.float32)
+            om_t = torch.tensor(om, device=DEVICE); os_t = torch.tensor(os_, device=DEVICE)   # rebuild for the update
         mean_ep_r, mean_loop = float(np.mean(ep_rews)), float(np.mean(ep_loops))
         # critic value at COLLECTION time (frozen critic -> batched forward == per-step during rollout)
         with torch.no_grad():
