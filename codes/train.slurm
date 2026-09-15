@@ -12,7 +12,7 @@
 #SBATCH --mem=256G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
 #                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
 #                                  #   pressure (job COMPLETED, no OOM). node has ~3TB; 96G is comfortable headroom.
-#SBATCH --time=30:00:00            # wall-clock limit; job KILLED at this. 150 iters @ 6M ~ 570s/iter -> ~23.75h + startup;
+#SBATCH --time=14:00:00            # wall-clock limit; job KILLED at this. 150 iters @ 6M ~ 570s/iter -> ~23.75h + startup;
 #                                  #   30h gives headroom (was 12h/60 iters). --signal below saves _last if we overrun.
 #                                  #   NB: long time HURTS backfill (SLURM can't slot you before a reservation) -> expect
 #                                  #   more PD (Priority) queueing. Trade accepted: 150 iters needs the wall.

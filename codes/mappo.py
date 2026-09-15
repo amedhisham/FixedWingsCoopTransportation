@@ -82,10 +82,11 @@ MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). P
     # policy must survive = the showable base-vs-RL comparison ([[f2-speed-binding-axis]]). Entries: 2-tuple
     # (label, dir) -> falls back to MIX_SCALE/MIX_RAMP; or 4-tuple (label, dir, scale, ramp) with explicit values.
     ("+x+y+z",   (1.0,  1.0,  0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
+    ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # 2nd RUNG (2026-09-16): warm-chained from the +x+y+z best net
+    #                                                 #   (residual_mappo_overfit.pt, DET_R -0.629). base-blow ~10m/29s |move|~15m
     # ONE-BY-ONE (2026-09-14): 3 hard scales together diverged (subcritical batch + off-dist frozen norm). Training
-    # a SINGLE hard direction -> 1.4M steps/task (~3x density), critB drops, correct re-estimated norm. Re-enable
-    # the others (warm-start chain or mix) once this one lands past base-blow. [[f2-speed-binding-axis]]
-    # ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # base-blow ~10m/29s |move|~15m — PARKED for one-by-one
+    # a SINGLE hard direction -> 1.4M steps/task (~3x density), critB drops, correct re-estimated norm. Add the
+    # others one at a time (warm-start chain) as each lands past base-blow. [[f2-speed-binding-axis]]
     # ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows (user-measured): |move|~25.7m — PARKED
     # ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),   # 4th traj — parked; sticking to the original 3 for now
 ]
@@ -107,7 +108,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 150                  # 60 didn't converge the single-dir 10/29 run -> 150 (>24h wall; see train.slurm --time).
+ITERS = 75                  # 60 didn't converge the single-dir 10/29 run -> 150 (>24h wall; see train.slurm --time).
                              # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
                              #   >> 1.4M (6-7x SUBCRITICAL) -> DET_R noise-walked DOWNHILL off the warm start.
                              #   Near-critical updates convert to progress; sub-critical ones waste compute on noise.
@@ -189,7 +190,7 @@ RUNNING_NORM = False     # keep obs-norm TRACKING each iter: EMA-update om/os_ f
 #   For a SINGLE FIXED scale the frozen old norm already FLIES (baseline -0.814) so tracking isn't needed. Before
 #   re-enabling (for multi-scale), HARDEN it: reject outlier steps (mask |(obs-om)/os_| > ~10) from the stat update. ***
 RUNNING_NORM_MOM = 0.99  # EMA momentum: om <- MOM*om + (1-MOM)*batch_mean (gentle ~1%/iter drift under a warm actor).
-WARMSTART = "residual_mappo_overfit_last.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
+WARMSTART = "residual_mappo_overfit.pt"   # partway-adapted net (a few iters toward the hard scales; BEATS the clean
 # _best_3trj on the hard-scale eval -> a better START for THIS task, user's call). Its SAVED norm = the OLD norm that
 # scale_test verified FLIES the move -> used as-is at iter 0 (RENORM_ON_START off). _best_3trj = the clean -0.421 backup
 # if you want the pristine start instead.
