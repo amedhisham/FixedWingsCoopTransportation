@@ -108,7 +108,10 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 75                  # 60 didn't converge the single-dir 10/29 run -> 150 (>24h wall; see train.slurm --time).
+ITERS = 75                  # 2nd 75-iter round on the joint 2-dir task, RESTARTING FROM BEST (overfit.pt, DET_R
+                             # -0.739): round 1 found the joint soln by iter 36 then oscillated (bimodal -z); this
+                             # restarts from best with fresh opt/log_std to try to break through. critB healthy ~5M
+                             # (<=6M batch) so NOT subcritical -> more iters is justified. [[f2-speed-binding-axis]]
                              # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
                              #   >> 1.4M (6-7x SUBCRITICAL) -> DET_R noise-walked DOWNHILL off the warm start.
                              #   Near-critical updates convert to progress; sub-critical ones waste compute on noise.
