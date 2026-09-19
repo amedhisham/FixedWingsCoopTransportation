@@ -83,11 +83,13 @@ MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). P
     # (label, dir) -> falls back to MIX_SCALE/MIX_RAMP; or 4-tuple (label, dir, scale, ramp) with explicit values.
     ("+x+y+z",   (1.0,  1.0,  0.5), 10.0, 29.0),     # base-blow ~10m/29s (policy flies it, no blowup) |move|~15m
     ("+x+y-z",   (1.0,  1.0, -0.5), 10.0, 29.0),     # 2nd RUNG (2026-09-16): warm-chained from the +x+y+z best net
-    #                                                 #   (residual_mappo_overfit.pt, DET_R -0.629). base-blow ~10m/29s |move|~15m
+    ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # 3rd RUNG (2026-09-19): warm from the 2-dir best (overfit.pt,
+    #                                                 #   DET_R -0.699). base blows (user-measured) |move|~25.7m; ramp 52 -> this
+    #                                                 #   dir runs 54s. Short dirs STILL truncate at their own 31s (per-dir ref
+    #                                                 #   length; OVERFIT_END=54s is only the FMU end_time cap, not a hold tail).
     # ONE-BY-ONE (2026-09-14): 3 hard scales together diverged (subcritical batch + off-dist frozen norm). Training
     # a SINGLE hard direction -> 1.4M steps/task (~3x density), critB drops, correct re-estimated norm. Add the
     # others one at a time (warm-start chain) as each lands past base-blow. [[f2-speed-binding-axis]]
-    # ("+.2x-y-z", (0.2, -1.0, -1.0), 18.0, 52.0),     # base blows (user-measured): |move|~25.7m — PARKED
     # ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),   # 4th traj — parked; sticking to the original 3 for now
 ]
 def _mix_norm(e):                      # expand (label,dir[,scale,ramp]) -> (label, dir_arr, scale, ramp)
@@ -108,10 +110,10 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 75                  # 2nd 75-iter round on the joint 2-dir task, RESTARTING FROM BEST (overfit.pt, DET_R
-                             # -0.739): round 1 found the joint soln by iter 36 then oscillated (bimodal -z); this
-                             # restarts from best with fresh opt/log_std to try to break through. critB healthy ~5M
-                             # (<=6M batch) so NOT subcritical -> more iters is justified. [[f2-speed-binding-axis]]
+ITERS = 80                  # 3-dir RUNG: add +.2x-y-z, warm from the 2-dir best (overfit.pt, DET_R -0.699). 75-iter
+                             # test size (2-dir rounds converged well within 75). The new dir starts ~failing (like -z
+                             # did: baseline ~-11) so mean DET_R craters at iter 0 then climbs. Watch per-dir loop +
+                             # critB (2-dir went subcritical past ~iter50 at 6M). [[f2-speed-binding-axis]]
                              # fewer iters at a MUCH bigger batch: the single-dir 10/29 run measured critB ~8-10M
                              #   >> 1.4M (6-7x SUBCRITICAL) -> DET_R noise-walked DOWNHILL off the warm start.
                              #   Near-critical updates convert to progress; sub-critical ones waste compute on noise.
