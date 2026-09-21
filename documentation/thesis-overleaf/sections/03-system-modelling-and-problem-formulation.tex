@@ -182,7 +182,7 @@ threshold $\varepsilon > 0$).
 
 Precisely, the load tracking will be completely achieved by controlling
 $f_g(t)$ while, the carrier trajectory feasibility will be done by
-controlling the internal forces.
+controlling the internal forces $f_\lambda(t)$.
 
 \section{Classical Control Stack (CCS)}
 
@@ -307,7 +307,7 @@ force derivative which can be calculated in a similar albeit more
 involved manner. The desired positions and velocities are then passed to
 the low level controller of each drone.
 
-\begin{figure}[htb]
+\begin{figure}[H]
   \centering
   \includegraphics[width=\textwidth]{figures/fig-ccs-pipeline.png}
   \caption{Overall classical control pipeline scheme, including the
@@ -352,7 +352,9 @@ asynchronous observations).
 
 Since the optimizer was already shown to work well, the proposed solution
 in this phase is to distill its behavior using IL. The goal would be to
-train a Neural Network (NN) to mimic the output of the optimizer. We face
+train a Neural Network (NN) to mimic the output of the optimizer. This 
+dramatically reduces the computational cost allowing the trajectories to be
+calculated online. We face
 an interesting choice here, either to train the NN to output $\lambda(t)$
 directly or output just $\xi(t)$, $A(t)$ and we can then reconstruct
 $\lambda(t)$ using the time $t$ and phase shifts $\phi_i$ using eq.

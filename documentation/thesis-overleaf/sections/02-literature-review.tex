@@ -2,12 +2,15 @@
 
 Cable-suspended cooperative payload transportation using UAVs has
 garnered considerable attention in recent years. Researchers have
-explored a wide range of techniques, from classical methods such
-Optimal Control [5] to learning-based methods such as Imitation Learning
-and Reinforcement Learning [6] [7] [8], with each offering its own advantages
-and disadvantages. 
+explored a wide range of techniques, from classical methods such as
+Optimal Control [6] and closed-loop approaches with carrier trajectories 
+calculated online using a Nonlinear Programming (NLP) solver, to 
+learning-based methods such as Imitation Learning and Reinforcement Learning 
+[7] [8] [9], with each offering its own advantages and disadvantages. 
 
-In [5], the authors propose a centralized kinodynamic
+\section{Multi-rotor cooperative transportation}
+
+In [6], the authors propose a centralized kinodynamic
 motion planner that formulates a finite-horizon Optimal Control Problem
 (OCP) and solves it online in a receding-horizon fashion. The approach
 aims to enable high-speed, high-acceleration manipulation of a
@@ -16,7 +19,7 @@ between the UAVs, cables, and payload. While it achieves strong results,
 it relies on a centralized kinodynamic planner, which may pose challenges
 for fully onboard deployment of the complete control system. 
 
-In [6], a
+In [7], a
 centralized kinodynamic planner is distilled using DAgger-based imitation
 learning into a homogeneous, decentralized UAV policy\footnote{\textbf{Distillation} is a form of imitation learning that involves transferring knowledge from a teacher policy, typically obtained through planning or expert demonstration, to a smaller or more deployable student policy by training the latter to reproduce the teacher's actions. \textbf{DAgger (Dataset Aggregation)} is an imitation-learning algorithm that iteratively collects expert actions on states visited by the learned policy and aggregates these samples into the training dataset, thereby reducing the distribution-shift problem encountered when the learner visits states not represented in the original demonstrations.}. This allows the
 approach to achieve agile full-pose cooperative manipulation using only
@@ -24,7 +27,7 @@ local observations and without communication. While the policy was
 decentralized, it was not deployed onboard during the actual testing due
 to its high computational cost. 
 
-In [7], a decentralized cooperative
+In [8], a decentralized cooperative
 control policy was learnt directly through multi-agent reinforcement
 learning (MARL), trading explicit trajectory-planning capability for much
 cheaper computational cost and greater robustness to heterogeneous agents
@@ -34,7 +37,7 @@ a low level controller that executes the actual tracking. In this case,
 since the policy had dramatically lower computational cost, actual 
 onboard execution was possible.
 
-In [8], instead of relying on a low level controller, an end-to-end 
+In [9], instead of relying on a low level controller, an end-to-end 
 decentralized cooperative control policy was learnt. The policy takes as
 input the sensor measurements and outputs the PWM directly to drones' motors.
 This eliminates the need for a low level controller and simplifies the 
@@ -42,23 +45,61 @@ deployment. However, while the policy did not rely on explicit communication
 between the drones, it relied on inter-drone measurements, with each drone 
 measuring the relative position between itself and the other drones. Such 
 measurements were subjected to noise during the training to make the policy
-resilient during deployment in real life scenarios. This is in contrast to [7]
+resilient during deployment in real life scenarios. This is in contrast to [8]
 were the measurements were in general noise-free but did not employ any type of
 inter-drone communication or measurements.
 
 
+\section{Fixed wings cooperative transportation}
+
 However, all of these works have focused on multirotor UAVs, while
 comparatively little attention has been given to fixed-wing UAVs. More
 recently, a new line of research has emerged exploring the same problem
-using fixed-wing UAVs [3] [4] [5]. In[3],
-However, these works relied on calculating
-the UAVs trajectories centrally using classical techniques. In [4] the
-trajectories are calculated using a centralized controller together with
-a Non Linear Programming (NLP) solver/optimizer.
+using fixed-wing UAVs [3] [4] [5]. In [3], the existence of static equilibria
+for a cable-suspended load transported by non-stopping flying carriers is 
+investigated. The study shows that fixed-wing carriers can maintain a fixed 
+pose for a cable-suspended load using at least three carriers, with some 
+exceptions and degenerate cases. The work presents a theoretical feasibility 
+study supported by numerical simulations in MATLAB/Simulink. However, only 
+steady-state equilibrium is considered, without addressing the transient 
+behavior of the system. Furthermore, the carrier reference trajectories are 
+precalculated offline and executed in open loop, meaning that there is no 
+reaction to disturbances, system uncertainties, or obstacles, and perfect 
+coordination between the carriers is assumed. 
 
-The works discussed above demonstrate several effective approaches to
-cooperative payload transportation, but also highlight a gap in using
-learning-based methods and decentralized strategies for cable suspended
-cooperative payload transportation using fixed-wing UAVs. Motivated by this
-gap, this work explores the use of Imitation Learning and Reinforcement 
-learning as a potential research direction.
+In[4], an algorithm for generating coordinated non-stop trajectories for 
+three or more carriers holding a cable-suspended load is presented. 
+The approach uses Hamiltonian cycles and graph theory to generate the 
+coordinated trajectories, with the results demonstrated through numerical 
+simulations in MATLAB/Simulink. However, only steady-state equilibrium is 
+considered, without addressing the transient behavior of the system. 
+Furthermore, the carrier reference trajectories are precalculated and there 
+is no closed-loop control, meaning that the trajectories cannot react to 
+disturbances or system uncertainties during operation.
+
+
+
+In [5], a closed-loop control approach for cooperative cable-suspended 
+payload manipulation using non-stopping flying carriers is presented. The 
+approach considers a time-varying load trajectory, which can also include 
+stopping, and consists of an outer-loop load-wrench controller, an inner-loop 
+carrier-trajectory generator, and an optimization layer for the internal 
+forces to enforce a strictly positive carrier velocity norm. The approach 
+is experimentally validated using Crazyflie quadrotors and the Crazyswarm 
+software, with a Vicon motion capture system, in addition to numerical 
+simulations in MATLAB/Simulink. However, the controller is centralized,
+is not deployed onboard, and assumes perfect knowledge of the system and clean,
+noise-free measurements. Furthermore, the trajectories are calculated using a
+centralized controller together with a Nonlinear Programming (NLP) 
+solver/optimizer, resulting in a high computational cost.
+
+
+The works discussed above that tackled the non-stopping carriers problems all 
+relied on calculating the UAVs trajectories centrally using classical 
+control techniques. While they demonstrated several effective approaches to
+cooperative payload transportation using non-stopping carriers, they also 
+highlighted a gap in using learning-based methods and decentralized strategies 
+to tackle the same problem. To the best of the author's knowledge, this 
+research direction was not explored before. Motivated 
+by this gap, this work explores the use of Imitation Learning and 
+Reinforcement learning as a potential research direction.
