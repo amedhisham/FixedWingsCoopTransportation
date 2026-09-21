@@ -1,0 +1,92 @@
+\relax 
+\@writefile{toc}{\contentsline {chapter}{\numberline {1}Introduction}{2}{}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {1.1}Motivation}{2}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1.1}{\ignorespaces Cooperative teams of multirotor UAVs transporting a cable-suspended payload.}}{3}{}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:multirotor-teams}{{1.1}{3}{Motivation}{figure.1.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {1.2}Main challenges}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {2}\textbf  {Literature review and Project Contribution}}{5}{}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {chapter}{\numberline {3}System Modelling and Problem formulation}{7}{}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {3.1}System Model}{7}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3.1}{\ignorespaces Schematic representation of $n$ non-stopping fixed-wing carriers connected via cables to a rigid payload, showing the inertial world frame $\mathcal  {F}_W$ and the payload's body-fixed frame $\mathcal  {F}_B$.}}{8}{}\protected@file@percent }
+\newlabel{fig:system-model}{{3.1}{8}{System Model}{figure.3.1}{}}
+\newlabel{eq:carrier-position}{{3.1}{8}{System Model}{equation.3.1}{}}
+\newlabel{eq:carrier-velocity}{{3.2}{8}{System Model}{equation.3.2}{}}
+\newlabel{eq:cable-force}{{3.3}{9}{System Model}{equation.3.3}{}}
+\newlabel{eq:newton}{{3.4}{9}{System Model}{equation.3.4}{}}
+\newlabel{eq:euler}{{3.5}{9}{System Model}{equation.3.5}{}}
+\newlabel{eq:wrench-map}{{3.6}{9}{System Model}{equation.3.6}{}}
+\newlabel{eq:grasp-matrix}{{3.7}{9}{System Model}{equation.3.7}{}}
+\newlabel{eq:force-decomposition}{{3.8}{10}{System Model}{equation.3.8}{}}
+\newlabel{eq:velocity-floor}{{3.9}{10}{System Model}{equation.3.9}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.2}Classical Control Stack (CCS)}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2.1}Load tracking}{10}{}\protected@file@percent }
+\newlabel{eq:error-position}{{3.10}{11}{Load tracking}{equation.3.10}{}}
+\newlabel{eq:error-orientation}{{3.11}{11}{Load tracking}{equation.3.11}{}}
+\newlabel{eq:error-velocity}{{3.12}{11}{Load tracking}{equation.3.12}{}}
+\newlabel{eq:error-angular-velocity}{{3.13}{11}{Load tracking}{equation.3.13}{}}
+\newlabel{eq:desired-force}{{3.14}{11}{Load tracking}{equation.3.14}{}}
+\newlabel{eq:desired-torque}{{3.15}{11}{Load tracking}{equation.3.15}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2.2}Carrier Trajectory / Internal Force Calculation: Optimization layer}{11}{}\protected@file@percent }
+\newlabel{eq:optimizer-force}{{3.16}{11}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.16}{}}
+\newlabel{eq:lambda-def}{{3.17}{12}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.17}{}}
+\newlabel{eq:optimization-problem}{{3.18}{12}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.18}{}}
+\newlabel{eq:objective-function}{{3.19}{12}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.19}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3.3}Learning-based methods}{12}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3.2}{\ignorespaces Overall classical control pipeline scheme, including the load-wrench controller (green block), the carrier-trajectory generator (blue blocks), and the optimization layer (red block).}}{13}{}\protected@file@percent }
+\newlabel{fig:ccs-pipeline}{{3.2}{13}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{figure.3.2}{}}
+\newlabel{eq:il-action-force}{{3.20}{13}{Learning-based methods}{equation.3.20}{}}
+\newlabel{eq:il-nullspace-force}{{3.21}{13}{Learning-based methods}{equation.3.21}{}}
+\newlabel{eq:residual-action-force}{{3.22}{14}{Learning-based methods}{equation.3.22}{}}
+\@writefile{toc}{\contentsline {chapter}{\numberline {4}Methodology}{15}{}\protected@file@percent }
+\@writefile{lof}{\addvspace {10\p@ }}
+\@writefile{lot}{\addvspace {10\p@ }}
+\@writefile{toc}{\contentsline {section}{\numberline {4.1}General discussion on the decentralization of the controller}{15}{}\protected@file@percent }
+\newlabel{eq:decentralized-force}{{4.1}{15}{General discussion on the decentralization of the controller}{equation.4.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4.2}Implementation details}{16}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.3}Phase One : Imitation Learning}{17}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.1}State/Input Design}{18}{}\protected@file@percent }
+\newlabel{eq:fourier-basic}{{4.2}{20}{State/Input Design}{equation.4.2}{}}
+\newlabel{eq:fourier-general}{{4.3}{20}{State/Input Design}{equation.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.2}Dataset Aggregation (DAgger)}{21}{}\protected@file@percent }
+\newlabel{eq:dagger-mixing}{{4.4}{21}{Dataset Aggregation (DAgger)}{equation.4.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.1}{\ignorespaces Behavioral Cloning Schedule: Phase 1 (Supervised Learning) $\rightarrow $ Phase 2 (DAgger).}}{23}{}\protected@file@percent }
+\newlabel{fig:bc-dagger-schedule}{{4.1}{23}{Dataset Aggregation (DAgger)}{figure.4.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.2}{\ignorespaces Final dataset management strategy per DAgger iteration: new rollout data and a bin-stratified sample of the historical pool form the training set; after a successful iteration the new data is merged into the pool and excess points are evicted uniformly (respecting the per-bin minimum) to restore the size cap.}}{26}{}\protected@file@percent }
+\newlabel{fig:dataset-management}{{4.2}{26}{Dataset Aggregation (DAgger)}{figure.4.2}{}}
+\newlabel{eq:jitter-per-carrier}{{4.5}{27}{Dataset Aggregation (DAgger)}{equation.4.5}{}}
+\newlabel{eq:jitter-team}{{4.6}{27}{Dataset Aggregation (DAgger)}{equation.4.6}{}}
+\newlabel{eq:mse-per-carrier}{{4.7}{27}{Dataset Aggregation (DAgger)}{equation.4.7}{}}
+\newlabel{eq:mse-team}{{4.8}{28}{Dataset Aggregation (DAgger)}{equation.4.8}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.3}Generalization}{28}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.4}Phase Two : Reinforcement Learning}{28}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.1}Introduction}{28}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.2}Action Space}{30}{}\protected@file@percent }
+\newlabel{eq:phase2-naive-action}{{4.9}{30}{Action Space}{equation.4.9}{}}
+\newlabel{eq:phase2-action-force}{{4.10}{30}{Action Space}{equation.4.10}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.3}Observation Space}{30}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.4}Reward function}{35}{}\protected@file@percent }
+\newlabel{eq:per-drone-reward}{{4.11}{36}{Reward function}{equation.4.11}{}}
+\newlabel{eq:team-reward}{{4.12}{36}{Reward function}{equation.4.12}{}}
+\newlabel{eq:manifold-term}{{4.13}{36}{Reward function}{equation.4.13}{}}
+\newlabel{eq:stall-term}{{4.14}{36}{Reward function}{equation.4.14}{}}
+\newlabel{eq:overspeed-term}{{4.15}{37}{Reward function}{equation.4.15}{}}
+\newlabel{eq:overshoot-term}{{4.16}{37}{Reward function}{equation.4.16}{}}
+\gdef \LT@i {\LT@entry 
+    {1}{112.15425pt}\LT@entry 
+    {1}{184.99498pt}\LT@entry 
+    {1}{148.57462pt}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{39}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.6}MAPPO implementation details}{39}{}\protected@file@percent }
+\newlabel{eq:advantage-estimate}{{4.17}{39}{MAPPO implementation details}{equation.4.17}{}}
+\newlabel{eq:critic-target}{{4.18}{39}{MAPPO implementation details}{equation.4.18}{}}
+\newlabel{eq:bc-combined-dataset}{{4.19}{40}{MAPPO implementation details}{equation.4.19}{}}
+\newlabel{eq:bc-loss}{{4.20}{40}{MAPPO implementation details}{equation.4.20}{}}
+\@writefile{toc}{\contentsline {chapter}{References}{42}{}\protected@file@percent }
+\gdef \@abspage@last{43}

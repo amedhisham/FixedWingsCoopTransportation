@@ -29,10 +29,14 @@
 \usepackage{setspace}
 \onehalfspacing
 \usepackage{parskip}
+% parskip removes first-line indent by default (indent-free style); bring
+% the indent back while keeping parskip's vertical gap between paragraphs.
+\setlength{\parindent}{1.5em}
 \usepackage{longtable}
 \usepackage{xcolor}
 \usepackage{titlesec}
 \usepackage{graphicx}
+\usepackage{float}
 \usepackage{subcaption}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -42,8 +46,11 @@
 
 % --- Chapter styling: big, colored, numbered ("Chapter N" over a big title) -
 \definecolor{chaptercolor}{RGB}{0,51,102}
+% \centering here keeps long chapter titles that wrap onto a second line
+% centered instead of ragged-left, which reads much better than a lone
+% trailing word hanging on its own line.
 \titleformat{\chapter}[display]
-  {\normalfont\bfseries\color{chaptercolor}}
+  {\normalfont\bfseries\color{chaptercolor}\centering}
   {\Large\MakeUppercase{\chaptertitlename}~\Large\thechapter}
   {14pt}
   {\Huge\bfseries}
@@ -102,6 +109,9 @@
 
 \begin{document}
 \maketitle
+
+\tableofcontents
+\newpage
 
 \input{sections/01-introduction}
 \input{sections/02-literature-review}

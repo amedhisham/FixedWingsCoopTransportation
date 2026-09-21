@@ -1,6 +1,6 @@
-\chapter{Methodology:}
+\chapter{Methodology}
 
-\section{General discussion on the decentralization of the controller:}
+\section{General discussion on the decentralization of the controller}
 
 In order to decentralize the controller, we need to recalculate the full force vector using only local observations
 
@@ -28,13 +28,13 @@ This achieves two major advantages over the optimizer:
   \item We can do RL and warm start our actor from this behaviorally cloned policy so we can mold it to our needs (if it turns out to be helpful or required). This was not pursued in the present work, but it could be considered in future work.
 \end{itemize}
 
-\section{Implementation details:}
+\section{Implementation details}
 
 The system model/plant was developed entirely inside Simulink. It was then exported as an FMU that python can step through to develop the optimizer on top (using CasADi). The FMU can also be wrapped in a gymnasium environment to allow easy interface with PyTorch for IL and RL. However, the FMU cannot be run on GPU directly so the number of parallel environments is limited by the CPU cores. This was chosen because the modeling of cable-suspended multibody systems is susceptible to subtle formulation and implementation errors when performed manually. In contrast, Simulink provides a framework that facilitates the consistent and accurate formulation of such systems. Since the PID controller, the optimizer were going to be developed on top of it. A reliable ground-truth plant to validate them necessary. Additionally, the main bottleneck in phase one was running the CasADi optimizer that the net needs to imitate. The optimizer runs on the CPU and takes 3-4ms/step while the FMU alone takes >1 ms/step. This means that parallelizing the environment and running thousands of instances on the GPU would be useless anyway. For phase 2 (the MARL phase), since the optimizer is not used anymore, the bottleneck shifted to simulating the environment. This marked the point at which the Simulink generated FMU choice became increasingly burdensome. However, it was still possible to train a prototype agent that demonstrates the feasibility of the proposed approach. For future work, the system model should be implemented within a GPU-parallelizable environment, such as JAX or NVIDIA Warp.
 
 \section{Phase One : Imitation Learning}
 
-\textbf{Initial approach:}
+\noindent\textbf{Initial approach}
 
 As a starting point, we attempted a simple supervised learning setup. We generate a trajectory using the CCS (later referred to as the expert), we collect the inputs that we intend to feed the NN at each time step and finally we record the output $\lambda$ calculated by the expert. This creates a Dataset $\mathcal{D} = \{(s_i, a_i)\}_{i=1}^N$, where our state $s_i$ will be the input and action $a_i$ is the $\lambda$ output.
 
@@ -49,7 +49,7 @@ Figure 3: Components of the initial desired load trajectory used in the first at
 
 After the initial attempt proved successful and the policy was able to closely mimic the optimizer, the approach was generalized to a diverse set of trajectories, as will discussed in following sections.
 
-\subsection{State/Input Design:}
+\subsection{State/Input Design}
 
 As discussed earlier, this is a critical design choice since the optimizer has many internal variables and the MLP has no memory element. Furthermore, $\lambda$ is not just a function of these internal states but also a function of time. Indeed, given fixed $\phi$, $\xi$ and $A$, $\lambda$ is still time varying since it is a sinusoid eq. \eqref{eq:lambda-def}. 
 
@@ -63,11 +63,11 @@ We can generally split the variables that $\lambda$ depends on to three main cat
 
 We discuss each of them in turn in the remainder of this subsection.
 
-\textbf{Physical system states:}
+\noindent\textbf{Physical system states}
 
 Naturally, the reconstructed velocities of the carriers $\dot{p}_{R_i}$, $i = 1, \dots, n$ are a going to be part of the state. For our particular implementation we chose $n = 4$, so the first part of our state is $\dot{p}_{R_{1,2,3,4}} \in \mathbb{R}^{12}$ i.e. the carrier velocity vectors stacked. While technically only the velocity norms are needed, the whole vectors were provided thus increasing the information available to the MLP and allowing it to calculate the norm internally. 
 
-\textbf{Internal variables:}
+\noindent\textbf{Internal variables}
 
 The phase shifts $\phi_i$, $i = 1,2,3,4$ are constant for a given configuration and therefore can be memorized. On the other hand, $\xi(t)$ and $A(t)$ are variable and depend on their previous value and the carrier velocity norms. Since the initial value for them in the optimizer is constant, a reasonable assumption would be that the network can memorize them if they remain unchanged. But since they only change based on the carrier velocities (which are provided to the policy), the policy can just memorize the initial condition and learn to change them similar to the optimizer conditioned on the velocity norms. The challenge is MLPs don’t have any memory or internal state. Consequently, if the policy learns to change $\xi(t)$ and $A(t)$ in a given step based on its input and what the expert action was by the next step it will have no memory of this and will fall back to the default/initial $\xi(t)$ and $A(t)$ that structurally memorized. A reasonable remedy would be to supply the policy’s last action as part of the current state/input. So $a(t) \in s(t+1)$ or in our case $\lambda(t) \in s(t+1)$. 
 
@@ -75,7 +75,7 @@ For learning a single trajectory, this proved to be sufficient. However, during 
 
 This technique means we need to provide multiple historical $\lambda$'s that did not exist at $t=0$. To address this challenge, we assume that the initial $\xi(t)$ and $A(t)$ are agreed on once in the beginning (either by communication or just hardcoding) . They are then used to construct the historical $\lambda$'s by extrapolation in the past knowing the fixed phase shifts of the configuration. 
 
-\textbf{Time:}
+\noindent\textbf{Time}
 
 Although providing the time directly to the NN may appear to be the most straightforward solution, this approach leads to several problems. First of all, during the initial stage when we are training on one trajectory, this risks that the network just memorizes which actions to do just based on time. This completely invalidates the test and compromises the investigation of whether the provided state is enough to make the actions learnable. Secondly, it creates generalization risks when we attempt to run episodes longer than those used in the training. Lastly, it creates normalization problems since we normalize our observation space before feeding it to the net, by using larger and larger time stamps we distort this normalization and destabilize the resulting observations. 
 
@@ -85,7 +85,7 @@ It is important to note that this information is not encoded in any way in the l
 
 A promising solution would be to use the output of a periodic function in time. One possible function can be a saw tooth, but an even better solution can be using sine and cosine functions.  
 
-\textbf{Fourier time encoding/ Fourier feature mapping:}
+\noindent\textbf{Fourier time encoding/ Fourier feature mapping}
 
 Fourier time encoding (also called trigonometric clock embedding, sinusoidal time embedding, or Fourier feature encoding) is a way of representing time or phase as a vector of periodic functions instead of a single scalar [5].
 
@@ -131,7 +131,7 @@ To summarize, the observation space can of the Imitation learning policy is:
   \]
 \end{itemize}
 
-\subsection{Dataset Aggregation (DAgger):}
+\subsection{Dataset Aggregation (DAgger)}
 
 While normal BC provides a simple and effective way to learn a policy from expert demonstrations by treating imitation learning as a supervised learning problem. The key assumption, however, is that the states encountered by the learner during deployment will look similar to those seen in the expert demonstrations.
 
@@ -179,9 +179,7 @@ The DAgger iteration can then be summarized in three steps:
 
 \begin{figure}[htb]
   \centering
-  % Stretched taller than its native aspect ratio (source is quite wide/short
-  % and the axis labels/legend become unreadable at width=\textwidth alone).
-  \includegraphics[width=\textwidth,height=11cm]{figures/fig-bc-dagger-schedule.png}
+  \includegraphics[width=\textwidth,height=14cm]{figures/fig-bc-dagger-schedule.png}
   \caption{Behavioral Cloning Schedule: Phase 1 (Supervised Learning) $\rightarrow$ Phase 2 (DAgger).}
   \label{fig:bc-dagger-schedule}
 \end{figure}
@@ -223,7 +221,7 @@ The question then becomes how to choose the 20\% old data.
 
 Multiple test were conducted using these ideas and different combinations of them. The last two ideas, especially, were be mixed in different ways. For example, the data points within each bin would be selected or not based on difficulty to ensure good representation of both the different maneuvers and their difficulty levels. 
 
-\textbf{Final Dataset Management Strategy:}
+\noindent\textbf{Final Dataset Management Strategy}
 
 Each DAgger iteration generates approximately \textbf{120K new data points}, which we label with \textbf{hardness, age, and bin/category}. We keep all of this new data for training and additionally augment it with uniformly sampled old data from a historical pool. When sampling the old data, we enforce a minimum representation per bin. If a bin would contribute less than the minimum 20\%, we sample additional points from that bin until this minimum is guaranteed.
 
@@ -239,11 +237,18 @@ The bins are defined as:
   \item \textbf{1 = Cruise:} everything else (steady motion)
 \end{itemize}
 
-\textbf{Evaluation metrics:}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig-dataset-management.png}
+  \caption{Final dataset management strategy per DAgger iteration: new rollout data and a bin-stratified sample of the historical pool form the training set; after a successful iteration the new data is merged into the pool and excess points are evicted uniformly (respecting the per-bin minimum) to restore the size cap.}
+  \label{fig:dataset-management}
+\end{figure}
+
+\noindent\textbf{Evaluation metrics}
 
 Two main metrics are used to determine whether a DAgger iteration was successful and we can safely move to a lower $\beta$ or not.
 
-\textbf{Jitter:}
+\noindent\textbf{Jitter}
 
 For carrier i, we define jitter as
 
@@ -271,7 +276,7 @@ Remark: this definition relies on our sampling period $\Delta t$ which is 10ms i
 
 Although we refer to this metric as jitter, it actually measures the mean absolute first difference of the action sequence. Consequently, it captures overall temporal variation in the policy output, including both abrupt fluctuations and smooth, gradual changes. Therefore, the optimizer’s smooth $\lambda$ has value $J \sim 0.016$ and we consider a policy to be smooth enough if its $J < 0.02$.
 
-\textbf{Mean Squared Error:}
+\noindent\textbf{Mean Squared Error}
 
 For drone $i$, the mean squared error is:
 
@@ -291,7 +296,7 @@ The team-level MSE is the average across all drones:
 
 An $\mathrm{MSE} < 10^{-3}$ is considered satisfactory.
 
-\subsection{Generalization:}
+\subsection{Generalization}
 
 Once the policy was successful on one trajectory and the basic methodology proved to be functioning, the next step was to generalize by training on multiple trajectories. Training was done by sampling random component-wise rest-to-rest quintic polynomial trajectories. A validation/testing set was held out during training to evaluate the policy's ability to generalize to unseen trajectories. 
 
@@ -299,7 +304,7 @@ The generation of the random trajectories ensured generalization across movement
 
 \section{Phase Two : Reinforcement Learning}
 
-\subsection{Introduction:}
+\subsection{Introduction}
 
 So far we have only discussed replicating the original centralized controller. We can, in theory, deploy it in a centralized manner assuming perfect knowledge of the system by all the carriers. Since they will agree on everything and they employ the same algorithm, coordination will be achieved implicitly without the need for communication. Each carrier will calculate the full force $f(t) = f_g(t) + f_\lambda(t) \in \mathbb{R}^{12}$ (eq.~\eqref{eq:decentralized-force}) and by knowing its ID, will apply its own slice from this vector $f_i(t) \in \mathbb{R}^3$. However, this property that might be helpful in theory to deploy the controller in a decentralized fashion instead makes deploying it under realistic assumptions quite delicate. The centralized controller uses global information on all the carriers to calculate $f(t)$. Specifically all the carrier velocities are needed to calculate $\lambda$. This global carrier information was reconstructed using load state and the total applied force $f(t)$. Once we have disagreements on the load state and the applied force (due to noise and delays/desynchronization), the reconstructed carrier velocities become completely corrupted and unreliable. This is on top of normal misalignments that will result from each carrier applying the controller to a different load state. While this is problematic, as long as the noise and desynchronization are bounded, the PID controllers will be able to stabilize the load. What is really insidious, is the disagreement in $\lambda$ due to the corruption of the global information. This estimation is not delicate and therefore the other carrier states become practically inaccessible. This is catastrophic as even a slight disagreement in $\lambda$ will continue to integrate over time and eventually lead to complete chaos and loss of coordination. To illustrate the issue, we consider the following example. 
 
@@ -316,13 +321,13 @@ Our setup is not simply attempting to use RL to produce better estimations of th
 
 In the results section, we argue that the policy achieves this goal by finding a control and coordination strategy that works under incomplete and noisy information, not by trying to “correct and denoise” this information.
 
-\textbf{Overall Architecture:}
+\noindent\textbf{Overall Architecture}
 
 Since we have multiple agents operating independently but all affecting the load together and affecting each other, the natural choice is to frame this problem as a Multi-Agent Reinforcement Learning (MARL) problem. Additionally, the performance of the carriers will be evaluated using a combination of global states (e.g. the true load position) and local states (e.g. carrier’s own velocity). Therefore, a Centralized Training with Decentralized Execution (CTDE) architecture was selected. This means that access to the global true centralized information is only available during the training evaluation process and not available to the individual carriers during the execution. We achieve this by using a shared/centralized critic with access to global state while the actor is deployed decentralized on each carrier. This means that during every time step, we have four actors taking actions in parallel. Since the carriers are identical and perform the same control task, differing only in their observations, we chose to share the same actor policy across them. This means that the four actors are homogeneous, using the same policy network and parameters, while producing actions based on their respective observations.
 
 Furthermore, we use Multi-Agent Proximal Policy Optimization (MAPPO), akin to another work [7] that tackled a similar, yet distinct, decentralized multi-carrier cooperative payload transportation problem. While in [7] the carriers were multirotors that could hover, this work tackles non-stopping (fixed-wing) carriers. The MAPPO algorithm also aligns naturally with our chosen CTDE architecture. 
 
-\subsection{Action Space:}
+\subsection{Action Space}
 
 Originally, the ideas was to keep wrench controller and optimizer and just add a residual $\delta f$ force to correct their behavior.
 
@@ -342,12 +347,12 @@ where $\delta w \in \mathbb{R}^6$ and $\delta \lambda \in \mathbb{R}^4$, total a
 
 This makes the policy gain insight into the underlying mechanics of the problem without having to discover it from scratch, as gradients on both $\delta w$ and $\delta \lambda$ are separate therefore learning how each one of them affects the system is 
 
-\subsection{Observation Space:}
+\subsection{Observation Space}
 
 The actor observation space must be limited to only local information (i.e. data that can be measured locally by sensors onboard the carrier). Additionally, in this work we assume no mid-flight communication, so the agent cannot have information about other carriers (unless they are mathematically reconstructed from local observations). 
 
 \newpage
-\textbf{Observation Space (Original\footnote{The use of the term “original” is clarified later in this section.}) $\in \mathbb{R}^{44}$:}
+\noindent\textbf{Observation Space (Original\footnote{The use of the term “original” is clarified later in this section.}) $\in \mathbb{R}^{44}$}
 
 \begin{itemize}
   \item Measured load state $\in \mathbb{R}^{18}$:
@@ -360,7 +365,7 @@ Naturally the most important observation is the load state.
 
  Since there is no direct communication between the carriers, the load state is the only implicit way of information sharing between them. The underlying assumption is that the policy learns to use it to partially infer some information about the other carriers and consequently what its own action should be. 
 
-\textbf{Noise and desynchronization:}
+\noindent\textbf{Noise and desynchronization}
 
 To fully test the decentralization, we assume that every carrier makes its own measurement that is affected by its own noise and delay/desynchronization. 
 
@@ -420,7 +425,7 @@ Over the duration of this work, multiple experiments with different observation 
 
 For example, historical measurements were added for the load state and the carrier’s own position and velocity. However, this did not lead to an improvement in performance. The lack of benefit from additional historical information hints that the policy is not trying to estimate “more correct” global information. Instead, this suggests that the policy is finding control actions that work despite loss of information. Nevertheless, we include the augmented observation space as it was used to conduct many other experiments in the latter part of the work, on the possibility that it might lead to some minor improvement.
 
-\textbf{Observation Space (Augmented) $\in \mathbb{R}^{98}$:}
+\noindent\textbf{Observation Space (Augmented) $\in \mathbb{R}^{98}$}
 
 \begin{itemize}
   \item Original Observation Space in addition to:
@@ -452,7 +457,7 @@ For example, historical measurements were added for the load state and the carri
 
 As mentioned earlier, the goal of adding historical measurements of the load state and the carrier’s own position and velocity was to determine whether the policy can benefit from estimating better information about the system. Furthermore, the reference load state was added to give the policy insight about the base controller’s action and the possible direction of evolution of the load state in the next time step. We will show in the results section that these additions did not lead to any meaningful enhancement of the performance and we will comment further on what they mean.  
 
-\textbf{Critic state $\in \mathbb{R}^{76}$:}
+\noindent\textbf{Critic state $\in \mathbb{R}^{76}$}
 
 Unlike the actor’s observation space, the critic’s state has access to global information that is true (not noisy or delayed). This allows it to objectively evaluate the actors’ actions and provide useful gradients for them to improve.
 
@@ -537,7 +542,7 @@ To summarize, the critic state $\in \mathbb{R}^{76}$ is composed of:
   \]
 \end{itemize}
 
-\subsection{Reward function:}
+\subsection{Reward function}
 
 The design of an efficient reward function is generally one of the most intricate challenges in RL. Fortunately, in the case of residual RL the challenge is slightly simplified since we already have a starting point. In this work, the design methodology was to observe failure modes of the existing setup and add terms one by one to steer the behavior away from these failure modes and towards desirable behavior. 
 
@@ -639,15 +644,15 @@ The following is a table summarizing each term:
 
 \textbf{Truncation Condition}: A one-shot penalty of $-100$ is triggered on a guard-truncated step if speed exceeds $v_{\text{blowup}} = 100$.
 
-\subsection{Centralized Controller Policy Guidance experiment (using Supervised Learning):}
+\subsection{Centralized Controller Policy Guidance experiment (using Supervised Learning)}
 
 To test whether the policy is learning to recover the centralized controller behavior or genuinely learning a different decentralized reactive policy, we conducted an experiment in which we warm-started the policy network from a network that was trained using supervised learning to output $\delta\lambda^*$ and $\delta w^*$. Where $\delta\lambda^* = \lambda_{\text{base}} - \lambda_{\text{expert}}$. $\lambda_{\text{base}}$ is the controller output when it is deployed decentralized on noisy and asynchronous measurements, while $\lambda_{\text{expert}}$ is the centralized controller output using clean (no noise and in sync) states and global information. Furthermore, during training, the supervised learning loss term was added to the PPO loss terms. This provides a consistent gradient signal to the policy, encouraging it to learn solutions that recover the behavior of the centralized controller. However, as will be discussed in the results section, this approach was not effective and was therefore abandoned. 
 
-\subsection{MAPPO implementation details:}
+\subsection{MAPPO implementation details}
 
 In this section we go over some design choices that we consider noteworthy. We do not go over all the MAPPO algorithm details as this is not the main focus of this work.
 
-\textbf{Advantage Estimates:}
+\noindent\textbf{Advantage Estimates}
 
 For each of the four agents, a separate advantage estimate is computed using its individual reward and the shared global value estimate:
 
@@ -658,7 +663,7 @@ For each of the four agents, a separate advantage estimate is computed using its
 
 Thus, the critic provides a common assessment of the team's expected future performance from the complete global state, while the individual reward determines how the contribution of each agent is reflected in its corresponding advantage. This allows the four agents to share a common global assessment while retaining distinct learning signals based on their individual contributions.
 
-\textbf{Critic Target:}
+\noindent\textbf{Critic Target}
 
 The target used to train the critic is computed as the mean of the individual agent rewards, together with the value estimate of the subsequent state:
 
@@ -671,13 +676,13 @@ This provides the critic with a target that reflects the collective performance 
 
 \_\_\_\_Figure here from the ppt: Overview of MAPPO Training Loop and Environment Step\_\_\_
 
-\textbf{Curriculum training:}
+\noindent\textbf{Curriculum training}
 
 Training the policy on the full set of trajectories simultaneously, with all reward terms active, proved challenging due to the diversity of behaviors and operating conditions. To facilitate policy learning, a curriculum training strategy was therefore adopted, in which both the training trajectories and reward terms were progressively expanded during training. This allows the policy to first learn from a more limited set of trajectories with simpler objectives before being exposed to increasingly diverse scenarios and more complex objectives.
 
 Training on multiple trajectories together proved to be especially difficult, as the reward becomes extremely high variance, making the learning incredibly slow. This was not an issue of observation aliasing since the load reference trajectory is provided in the observation space. It is also not a network capacity since multiple attempts to increase the size of the MLP were made and the problem persisted. To combat this high variance, the policy was first trained on a single trajectory until mastery, and then more trajectories were added one by one. However, this still proved to be challenging and does not force the policy to learn to generalize. To ensure the correct diagnosis of the problem, and to explore a potential solution, we conducted the experiment illustrated in the next subsection.
 
-\textbf{Behavior Cloning (BC) of multiple policies:}
+\noindent\textbf{Behavior Cloning (BC) of multiple policies}
 
  In order to test whether the policy is unable to learn multiple trajectories together due to observation aliasing or network capacity, multiple teacher policies $\{\pi_1,\dots,\pi_K\}$ were first trained separately on different trajectories until mastery. After that, their combined input-output pairs were used to train a single student policy/network of the same architecture using BC. 
 

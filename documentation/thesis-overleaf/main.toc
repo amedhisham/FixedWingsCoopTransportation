@@ -1,0 +1,25 @@
+\contentsline {chapter}{\numberline {1}Introduction}{2}{}%
+\contentsline {section}{\numberline {1.1}Motivation}{2}{}%
+\contentsline {section}{\numberline {1.2}Main challenges}{3}{}%
+\contentsline {chapter}{\numberline {2}\textbf {Literature review and Project Contribution}}{5}{}%
+\contentsline {chapter}{\numberline {3}System Modelling and Problem formulation}{7}{}%
+\contentsline {section}{\numberline {3.1}System Model}{7}{}%
+\contentsline {section}{\numberline {3.2}Classical Control Stack (CCS)}{10}{}%
+\contentsline {subsection}{\numberline {3.2.1}Load tracking}{10}{}%
+\contentsline {subsection}{\numberline {3.2.2}Carrier Trajectory / Internal Force Calculation: Optimization layer}{11}{}%
+\contentsline {section}{\numberline {3.3}Learning-based methods}{12}{}%
+\contentsline {chapter}{\numberline {4}Methodology}{15}{}%
+\contentsline {section}{\numberline {4.1}General discussion on the decentralization of the controller}{15}{}%
+\contentsline {section}{\numberline {4.2}Implementation details}{16}{}%
+\contentsline {section}{\numberline {4.3}Phase One : Imitation Learning}{17}{}%
+\contentsline {subsection}{\numberline {4.3.1}State/Input Design}{18}{}%
+\contentsline {subsection}{\numberline {4.3.2}Dataset Aggregation (DAgger)}{21}{}%
+\contentsline {subsection}{\numberline {4.3.3}Generalization}{28}{}%
+\contentsline {section}{\numberline {4.4}Phase Two : Reinforcement Learning}{28}{}%
+\contentsline {subsection}{\numberline {4.4.1}Introduction}{28}{}%
+\contentsline {subsection}{\numberline {4.4.2}Action Space}{30}{}%
+\contentsline {subsection}{\numberline {4.4.3}Observation Space}{30}{}%
+\contentsline {subsection}{\numberline {4.4.4}Reward function}{35}{}%
+\contentsline {subsection}{\numberline {4.4.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{39}{}%
+\contentsline {subsection}{\numberline {4.4.6}MAPPO implementation details}{39}{}%
+\contentsline {chapter}{References}{42}{}%
