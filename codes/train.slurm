@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=94         # -> NUM_WORKERS = 93. 94 is runner-08's MAX (CPUEfctv=94; SLURM holds
 #                                  #   back 2 of the 96). 95+ => "node configuration not available" and the
 #                                  #   job silently falls through to runner-11 (192c) instead of pinning here.
-#SBATCH --nodelist=runner-08       # idle 96-core node (CPUAlloc=0, ~3TB RAM) -> clean unshared run.
+#SBATCH --nodelist=runner-09       # idle 96-core node (CPUAlloc=0, ~3TB RAM) -> clean unshared run.
 #SBATCH --partition=allgroups      # DEI's batch partition (the only one for real jobs)
 #SBATCH --mem=256G                  # big-batch buffer + 93 FMU instances. NB: seff sums RSS across all 93 workers,
 #                                  #   so its "79.9G/64G" on job 4960725 is shared-page DOUBLE-COUNTING, not real
