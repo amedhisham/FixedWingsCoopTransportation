@@ -87,10 +87,12 @@ MIX_DIRS = [                           # (label, unit dir[, scale_m, ramp_s]). P
     #                                                 #   DET_R -0.699). base blows (user-measured) |move|~25.7m; ramp 52 -> this
     #                                                 #   dir runs 54s. Short dirs STILL truncate at their own 31s (per-dir ref
     #                                                 #   length; OVERFIT_END=54s is only the FMU end_time cap, not a hold tail).
+    ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),     # 4th RUNG (2026-09-21): warm from the 3-dir best (overfit.pt,
+    #                                                 #   DET_R -0.748, all 3 dirs loop ~0.63). |move|~19.6m; ramp 48 -> 50s,
+    #                                                 #   under dir3's 52s so horizon stays 54s. per-dir truncation as before.
     # ONE-BY-ONE (2026-09-14): 3 hard scales together diverged (subcritical batch + off-dist frozen norm). Training
     # a SINGLE hard direction -> 1.4M steps/task (~3x density), critB drops, correct re-estimated norm. Add the
     # others one at a time (warm-start chain) as each lands past base-blow. [[f2-speed-binding-axis]]
-    # ("+.5x+.5y+z", (0.5, 0.5, 1.0), 16.0, 48.0),   # 4th traj — parked; sticking to the original 3 for now
 ]
 def _mix_norm(e):                      # expand (label,dir[,scale,ramp]) -> (label, dir_arr, scale, ramp)
     label, d = e[0], np.asarray(e[1], float)
@@ -110,7 +112,7 @@ EVAL_SEED = 4242
 EVAL_DELAYS = [2, 2, 2, 2]
 
 # --- PPO hyperparameters ---
-ITERS = 80                  # 3-dir RUNG: add +.2x-y-z, warm from the 2-dir best (overfit.pt, DET_R -0.699). 75-iter
+ITERS = 80                  # 4-dir RUNG: add +.5x+.5y+z, warm from the 3-dir best (overfit.pt, DET_R -0.748). 80-iter
                              # test size (2-dir rounds converged well within 75). The new dir starts ~failing (like -z
                              # did: baseline ~-11) so mean DET_R craters at iter 0 then climbs. Watch per-dir loop +
                              # critB (2-dir went subcritical past ~iter50 at 6M). [[f2-speed-binding-axis]]
