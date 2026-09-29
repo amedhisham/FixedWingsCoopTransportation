@@ -11,6 +11,8 @@ AND the classical optimizer expert on the SAME held-out reference, then overlays
 Run:  python deploy_compare.py         # HELD_IDX-th held-out trajectory
 """
 
+import os
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -26,17 +28,18 @@ from trajectories import heldout_set, custom_set, showcase_set, BASE_POS, HOLD
 # QUINTIC MOVE mode (like scale_test): dial a direction + magnitude + ramp and run a fresh rest-to-rest
 # quintic, net vs optimizer. Overrides SHOWCASE/CUSTOM/DEFAULT when USE_MOVE is True. Horizon ends just
 # after the move completes (HOLD + ramp + margin) — no long static-hold tail.
-USE_MOVE = False
-MOVE_DIR = (-0.06, -0.88, -0.47)   # movement direction (auto-normalized); scaled by MOVE_MAG
-MOVE_MAG = 3.0               # displacement magnitude (m) along MOVE_DIR
-MOVE_RAMP = 16.0             # quintic move duration (s)
+USE_MOVE = True
+MOVE_DIR = (-0.5, -1.0, 0.5)   # movement direction (auto-normalized); scaled by MOVE_MAG
+MOVE_MAG = 5.0               # displacement magnitude (m) along MOVE_DIR
+MOVE_ROT = (10.0, -10.0, 0.0)   # orientation change over the move: (roll, pitch, yaw) in DEGREES (0,0,0 = none)
+MOVE_RAMP = 30.0             # quintic move duration (s)
 MOVE_MARGIN = 2.0            # extra seconds after the move before the episode ends
 
 # SHOWCASE: net-vs-optimizer overlay on ONE demo trajectory (decoupled from the training set) at
 # its OWN horizon — shows the net handles any length. None | "short" | "long" (trajectories.
 # showcase_set); SHOWCASE_IDX picks which entry (0=line, 1..=quintics). Overrides the toggles below.
 SHOWCASE = "long"
-SHOWCASE_IDX = 1      # 0 -> the straight-line demo; 1.. -> the quintic demos
+SHOWCASE_IDX = 3      # 0 -> the straight-line demo; 1.. -> the quintic demos
 SHOWCASE_M = 3        # quintics available per preset (so SHOWCASE_IDX can reach 1..M)
 
 # next 3 lines kinda dead code 
@@ -49,17 +52,52 @@ BYPASS_OPT = False     # adaptive optimizer (the real expert), matches collectio
 RUN_NET = True         # False -> optimizer ONLY (skip the net, fast) to survey the optimizer per traj
 TIME_MARKS = 7         # 3-D trajectory plot: this many evenly-spaced "t=Xs" numbers along each DRONE path
                        #   so the spatial curves carry a time reference (0 -> off)
+TOP_VIEW = False        # extra figure: 2-D top-down (X-Y, z dropped) view of the drone + load trajectories,
+                       #   net (solid) vs optimizer (dashed) — the plan-view companion to the 3-D plot.
+OPT_TRAJ_PLOT = False   # extra OPTIMIZER-ONLY figures: its top-down (X-Y) trajectory + its per-drone lambdas
+                       #   (clean expert view, useful with RUN_NET=False to survey the optimizer alone).
+REF_PLOT = False        # extra figures: the PURE reference load trajectory, one figure PER axis (X, Y, Z) vs
+                       #   time -> saves as 3 separate PNGs (use whichever axes move; short-0 is X only).
+
+# SAVING: paste a directory here to auto-save EVERY open figure into it as a named PNG — bypasses the clunky
+# GUI save dialog entirely. "" -> don't save (interactive window only). Names come from each figure's title
+# (e.g. "top_view_x-y.png"). SHOW controls whether the interactive window still pops after saving.
+SAVE_DIR = "/media/hisham/New Volume/Masters/Internship and Thesis prep/FixedWingsCoopTransportation/documentation/F1_results/Generalization/Dir"          # e.g. "/home/hisham/thesis_plots"  (created if missing)
+SAVE_DPI = 150         # PNG resolution
+SHOW = True            # also show the interactive window(s); set False to save-only (faster / headless)
+
+# OVERLAY STYLE — net must never hide the optimizer, nor vice-versa (see documentation/overlay_load.png):
+# the OPTIMIZER is a SOLID line drawn underneath; the NET is a THICK DASHED line drawn ON TOP, so the solid
+# shows through the dash gaps wherever they coincide. Reference is dotted gray. Constants keep every plot
+# consistent; pass color=... per call (single-line plots use OPT_COLOR/NET_COLOR, per-drone plots use C{i}).
+OPT_COLOR = "C0"                                  # optimizer = blue (the "central" expert)
+NET_COLOR = "C1"                                  # net = orange (the decentralized policy)
+# matches overlay_classical_f2.py: expert = WIDE + semi-transparent + SOLID underneath (acts as a band);
+# net = THIN + opaque + DASHED on top (rides crisply over/inside it). reference = dotted gray.
+REF_KW = dict(ls=":", color="0.5", lw=1.5, zorder=2)                          # reference: dotted gray
+OPT_KW = dict(ls="-", lw=3.0, alpha=0.35, solid_capstyle="round", zorder=3)   # optimizer: wide, faded, solid
+NET_KW = dict(ls="--", lw=1.4, zorder=4)                                      # net: thin, opaque, dashed, on TOP
+
+
+def rot_descr(traj, t_end):
+    """Describe a trajectory's net ORIENTATION change — Δ(roll, pitch, yaw) in degrees — from the
+    reference's start->end rotation (euler_deg returns roll,pitch,yaw). Wrapped to (-180, 180]."""
+    R0 = get_reference_trajectory(0.0, traj)[2]
+    R1 = get_reference_trajectory(t_end - DT, traj)[2]
+    dr, dp, dy = (np.asarray(euler_deg(R1)) - np.asarray(euler_deg(R0)) + 180.0) % 360.0 - 180.0
+    return f"rpy r={dr:.1f} p={dp:.1f} y={dy:.1f}°"
 
 
 def move_descr(traj, t_end):
-    """Describe a trajectory by its net MOVE — direction (unit) · magnitude (m) — from the reference's
-    start->end displacement, so the title reads e.g. 'move [0.71 0. 0.71]·5.00m' instead of a bare label."""
+    """Describe a trajectory by its net MOVE — direction (unit) · magnitude (m) AND orientation change
+    Δ(roll,pitch,yaw) in deg — from the reference's start->end displacement + rotation, so the title reads
+    e.g. 'move [0.71 0. 0.71]·5.00m   rpy r=0.0 p=0.0 y=0.0°' instead of a bare label."""
     p0 = np.asarray(get_reference_trajectory(0.0, traj)[0], float)
     p1 = np.asarray(get_reference_trajectory(t_end - DT, traj)[0], float)
     d = p1 - p0
     mag = float(np.linalg.norm(d))
     u = d / mag if mag > 1e-9 else d
-    return f"move {np.round(u, 2)}·{mag:.2f}m"
+    return f"move {np.round(u, 2)}·{mag:.2f}m   {rot_descr(traj, t_end)}"
 
 
 def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
@@ -76,16 +114,30 @@ def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
             ax.text(x, y, z, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
 
 
+def _mark_times_2d(ax, t, xy, n=TIME_MARKS, color="k", label=True):
+    """2-D (X-Y) analogue of _mark_times: n evenly-spaced t=Xs markers along a plan-view path.
+    xy: (T,>=2) positions on the same time grid as t."""
+    if n <= 0 or len(t) < 2:
+        return
+    t = np.asarray(t)
+    for tm in np.linspace(t[0], t[-1], n):
+        k = min(int(np.argmin(np.abs(t - tm))), len(xy) - 1)   # clamp (path may be 1 sample shorter)
+        x, y = xy[k, 0], xy[k, 1]
+        ax.plot([x], [y], "o", color=color, ms=4, mfc="white", mew=1.2, zorder=6)
+        if label:
+            ax.text(x, y, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
+
+
 def _tracking_panels(t, ref, net_act, opt_act, comp_labels, unit, title):
-    """3-panel ref-vs-actual time series (X/Y/Z or roll/pitch/yaw). ref is the shared reference
-    (dashed black); net_act/opt_act are actual tracks (either may be None)."""
+    """3-panel ref-vs-actual time series (X/Y/Z or roll/pitch/yaw). ref = dotted gray; optimizer = solid
+    (underneath), net = thick dashed (on top) so neither hides the other. net_act/opt_act may be None."""
     fig, ax = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
     for k, lbl in enumerate(comp_labels):
-        ax[k].plot(t, ref[:, k], "k--", lw=1.5, label="reference")
-        if net_act is not None:
-            ax[k].plot(t, net_act[:, k], "C0", lw=1.3, label="net")
-        if opt_act is not None:
-            ax[k].plot(t, opt_act[:, k], "C3", lw=1.1, ls="--", alpha=0.8, label="optimizer")
+        ax[k].plot(t, ref[:, k], label="reference", **REF_KW)
+        if opt_act is not None:                                    # SOLID, underneath
+            ax[k].plot(t, opt_act[:, k], color=OPT_COLOR, label="optimizer", **OPT_KW)
+        if net_act is not None:                                    # THICK DASHED, on top
+            ax[k].plot(t, net_act[:, k], color=NET_COLOR, label="net", **NET_KW)
         ax[k].set_ylabel(f"{lbl} ({unit})"); ax[k].grid(True)
         if k == 0:
             ax[k].legend(loc="upper right", fontsize=8)
@@ -225,12 +277,12 @@ def plot_compare(net, opt, title=""):
     # 0c. LOAD TRACKING ERROR magnitude ||load - ref|| over time (net vs optimizer) + mean lines.
     plt.figure(figsize=(11, 4.5))
     om, omse = load_track_err(opt)
-    plt.plot(t, om, "C3", lw=1.2, ls="--", alpha=0.85, label=f"optimizer (MSE {omse:.4f})")
-    plt.axhline(om.mean(), c="C3", ls=":", lw=1.0, alpha=0.6)
+    plt.plot(t, om, color=OPT_COLOR, label=f"optimizer (MSE {omse:.4f})", **OPT_KW)   # solid, underneath
+    plt.axhline(om.mean(), c=OPT_COLOR, ls=":", lw=1.0, alpha=0.6)
     if have_net:
         nm, nmse = load_track_err(net)
-        plt.plot(t[:len(nm)], nm, "C0", lw=1.4, label=f"net (MSE {nmse:.4f})")
-        plt.axhline(nm.mean(), c="C0", ls=":", lw=1.0, alpha=0.6)
+        plt.plot(t[:len(nm)], nm, color=NET_COLOR, label=f"net (MSE {nmse:.4f})", **NET_KW)  # thick dashed, on top
+        plt.axhline(nm.mean(), c=NET_COLOR, ls=":", lw=1.0, alpha=0.6)
     plt.xlabel("Time (s)"); plt.ylabel("‖load − ref‖ (m)")
     plt.title("Load tracking error over time" + sfx)
     plt.legend(fontsize=9); plt.grid(True)
@@ -246,26 +298,26 @@ def plot_compare(net, opt, title=""):
         plt.title(f"Carrier deviation from optimizer  (all-drone MSE {cmse_all:.4f} m²)" + sfx)
         plt.legend(fontsize=8); plt.grid(True)
 
-    # 1. drone velocity norms: PLANT speed (net solid, opt dashed) + epsilon floor.
+    # 1. drone velocity norms: PLANT speed (optimizer solid underneath, net thick dashed on top) + eps floor.
     plt.figure(figsize=(11, 5.5))
     for i in range(N):
+        plt.plot(t, opt["dvel"][i], color=f"C{i}", **OPT_KW)              # solid, underneath
         if have_net:
-            plt.plot(t, net["dvel"][i], color=f"C{i}", lw=1.4)
-        plt.plot(t, opt["dvel"][i], color=f"C{i}", lw=1.2, ls="--", alpha=0.7)
+            plt.plot(t, net["dvel"][i], color=f"C{i}", **NET_KW)         # thick dashed, on top
     plt.axhline(EPS, c="gray", ls="--", lw=1.3, label="epsilon (constraint floor)")
+    plt.plot([], [], color="k", label="optimizer (solid)", **OPT_KW)
     if have_net:
-        plt.plot([], [], "k-", lw=1.4, label="plant speed — net")
-    plt.plot([], [], "k--", alpha=0.7, label="plant speed — optimizer")
+        plt.plot([], [], color="k", label="net (dashed)", **NET_KW)
     plt.xlabel("Time (s)"); plt.ylabel("Velocity norm (m/s)")
     plt.title("Drone velocity norms — plant speed" + sfx)
     plt.legend(fontsize=8); plt.grid(True)
 
-    # 2. lambda per drone
+    # 2. lambda per drone (optimizer solid underneath, net thick dashed on top)
     fig, ax = plt.subplots(N, 1, figsize=(11, 8), sharex=True)
     for i in range(N):
+        ax[i].plot(t, opt["lam"][i], color=OPT_COLOR, label="optimizer", **OPT_KW)
         if have_net:
-            ax[i].plot(t, net["lam"][i], color="C0", lw=1.2, label="net")
-        ax[i].plot(t, opt["lam"][i], color="k", lw=1.0, ls="--", alpha=0.8, label="optimizer")
+            ax[i].plot(t, net["lam"][i], color=NET_COLOR, label="net", **NET_KW)
         ax[i].set_ylabel(f"$\\lambda_{i+1}$"); ax[i].grid(True)
         if i == 0:
             ax[i].legend(loc="upper right")
@@ -277,18 +329,19 @@ def plot_compare(net, opt, title=""):
     ax = fig.add_subplot(111, projection="3d")
     for i in range(N):
         dp = (net if have_net else opt)["dpos"][i]               # path the time-numbers ride on
+        ax.plot(opt["dpos"][i][s0:, 0], opt["dpos"][i][s0:, 1], opt["dpos"][i][s0:, 2],
+                color=f"C{i}", label=f"drone {i+1} opt", **OPT_KW)          # solid, underneath
         if have_net:
             ax.plot(net["dpos"][i][s0:, 0], net["dpos"][i][s0:, 1], net["dpos"][i][s0:, 2],
-                    color=f"C{i}", lw=1.4, label=f"drone {i+1} net")
-        ax.plot(opt["dpos"][i][s0:, 0], opt["dpos"][i][s0:, 1], opt["dpos"][i][s0:, 2],
-                color=f"C{i}", lw=1.2, ls="--", alpha=0.7, label=f"drone {i+1} opt")
+                    color=f"C{i}", label=f"drone {i+1} net", **NET_KW)      # thick dashed, on top
         _mark_times(ax, t[s0:], dp[s0:], color=f"C{i}", label=True)   # NUMBERS on the drone trajectories
-    if have_net:
-        ax.plot(net["load"][s0:, 0], net["load"][s0:, 1], net["load"][s0:, 2], "k", lw=2, label="load net")
     ax.plot(opt["load"][s0:, 0], opt["load"][s0:, 1], opt["load"][s0:, 2],
-            color="gray", lw=2, ls="--", label="load opt")
+            color="0.4", label="load opt", **OPT_KW)                        # wide faded solid, underneath
+    if have_net:
+        ax.plot(net["load"][s0:, 0], net["load"][s0:, 1], net["load"][s0:, 2],
+                color="k", label="load net", **NET_KW)                      # thin opaque dashed, on top
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.set_zlabel("Z (m)")
-    ax.set_title("Drone XYZ trajectories — net (solid) vs optimizer (dashed)" + sfx)
+    ax.set_title("Drone XYZ trajectories — optimizer (solid) vs net (dashed)" + sfx)
     ax.legend(ncol=2, fontsize=8)
 
     # 4. optimizer decision variables A (amplitude) and xi (frequency) — optimizer only
@@ -300,6 +353,113 @@ def plot_compare(net, opt, title=""):
         fig.suptitle("Optimizer decision variables  ($\\lambda_i = A\\cos(\\xi t + \\phi_i)$)" + sfx)
 
 
+def plot_top_view(net, opt, title=""):
+    """2-D top-down (X-Y) view of the drone + load trajectories: optimizer solid (underneath), net thick
+    dashed (on top) so neither hides the other. Plan-view companion to the 3-D figure. net may be None."""
+    t = opt["t"]; sfx = f" — {title}" if title else ""
+    have_net = net is not None
+    s0 = 2                                                        # skip the t=0 sample (weird init jump)
+    plt.figure(figsize=(8, 8))
+    ax = plt.gca()
+    for i in range(N):
+        dp = (net if have_net else opt)["dpos"][i]               # path the time-numbers ride on
+        ax.plot(opt["dpos"][i][s0:, 0], opt["dpos"][i][s0:, 1],
+                color=f"C{i}", label=f"drone {i+1} opt", **OPT_KW)          # solid, underneath
+        if have_net:
+            ax.plot(net["dpos"][i][s0:, 0], net["dpos"][i][s0:, 1],
+                    color=f"C{i}", label=f"drone {i+1} net", **NET_KW)      # thick dashed, on top
+        _mark_times_2d(ax, t[s0:], dp[s0:], color=f"C{i}", label=True)
+    ax.plot(opt["load"][s0:, 0], opt["load"][s0:, 1], color="0.4", label="load opt", **OPT_KW)
+    if have_net:
+        ax.plot(net["load"][s0:, 0], net["load"][s0:, 1], color="k", label="load net", **NET_KW)
+    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)")
+    ax.set_aspect("equal", adjustable="datalim")                 # true plan-view geometry
+    ax.set_title("Top view (X-Y) — optimizer (solid) vs net (dashed)" + sfx)
+    ax.legend(ncol=2, fontsize=8); ax.grid(True)
+
+
+def plot_optimizer_only(opt, title=""):
+    """OPTIMIZER-ONLY figures: (a) top-down (X-Y) drone + load trajectory, (b) per-drone lambdas.
+    The clean expert view — no net overlay (works even when RUN_NET=False)."""
+    t = opt["t"]; sfx = f" — {title}" if title else ""
+    s0 = 2
+
+    # (a) top-down (X-Y) trajectory — optimizer only
+    plt.figure(figsize=(8, 8))
+    ax = plt.gca()
+    for i in range(N):
+        ax.plot(opt["dpos"][i][s0:, 0], opt["dpos"][i][s0:, 1],
+                color=f"C{i}", lw=1.4, label=f"drone {i+1}")
+        _mark_times_2d(ax, t[s0:], opt["dpos"][i][s0:], color=f"C{i}", label=True)
+    ax.plot(opt["load"][s0:, 0], opt["load"][s0:, 1], "k", lw=2, label="load")
+    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)")
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_title("Optimizer — top view (X-Y)" + sfx)
+    ax.legend(ncol=2, fontsize=8); ax.grid(True)
+
+    # (b) per-drone lambdas — optimizer only
+    fig, ax = plt.subplots(N, 1, figsize=(11, 8), sharex=True)
+    for i in range(N):
+        ax[i].plot(t, opt["lam"][i], color="C3", lw=1.2)
+        ax[i].set_ylabel(f"$\\lambda_{i+1}$"); ax[i].grid(True)
+    ax[-1].set_xlabel("Time (s)"); fig.suptitle("Optimizer lambdas" + sfx)
+
+    # (c) drone velocity norms — optimizer only (PLANT speed) + epsilon floor
+    plt.figure(figsize=(11, 5.5))
+    for i in range(N):
+        plt.plot(t, opt["dvel"][i], color=f"C{i}", lw=1.3, label=f"drone {i+1}")
+    plt.axhline(EPS, c="gray", ls="--", lw=1.3, label="epsilon (constraint floor)")
+    plt.xlabel("Time (s)"); plt.ylabel("Velocity norm (m/s)")
+    plt.title("Optimizer — drone velocity norms" + sfx)
+    plt.legend(fontsize=8); plt.grid(True)
+
+
+def plot_reference(opt, title=""):
+    """The PURE reference load trajectory — one figure PER axis (X, Y, Z) vs time, so each saves as its
+    own PNG. Use whichever axes actually move (short-0 is X only). Reference is shared net/opt -> opt['ref']."""
+    t = opt["t"]; sfx = f" — {title}" if title else ""
+    ref = opt["ref"]
+    for k, ax_lbl in enumerate(["X", "Y", "Z"]):
+        plt.figure(figsize=(11, 4))
+        plt.plot(t, ref[:, k], "k", lw=1.6)
+        plt.xlabel("Time (s)"); plt.ylabel(f"{ax_lbl} (m)")
+        plt.title(f"Reference trajectory {ax_lbl}" + sfx)
+        plt.grid(True)
+
+
+def _fig_name(fig, idx):
+    """Filename stem = the figure's TITLE (suptitle, else the first non-empty axes title), with only
+    filesystem-illegal characters replaced so the .png reads like the plot. Falls back to fig<idx>."""
+    txt = ""
+    st = getattr(fig, "_suptitle", None)
+    if st is not None:
+        txt = st.get_text()
+    if not txt:
+        for ax in fig.axes:
+            if ax.get_title():
+                txt = ax.get_title(); break
+    txt = re.sub(r"\s*rpy r=[-\d.]+ p=[-\d.]+ y=[-\d.]+°", "", txt)   # drop the rpy chunk from FILENAMES only
+    txt = re.sub(r'[/\\:*?"<>|\n\t]+', "_", txt)     # replace ONLY path-illegal chars (keep spaces, —, ·)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt or f"fig{idx}"
+
+
+def save_all_figs(save_dir, dpi=SAVE_DPI):
+    """Save every open figure into save_dir as <title>.png — no GUI dialog. De-dupes repeated titles."""
+    save_dir = os.path.expanduser(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    seen = {}
+    for idx in plt.get_fignums():
+        fig = plt.figure(idx)
+        name = _fig_name(fig, idx)
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:                            # same title twice -> append a counter
+            name = f"{name} ({seen[name]})"
+        path = os.path.join(save_dir, f"{name}.png")
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        print(f"saved {path}")
+
+
 def main():
     t_end = T_END
     title = f"held-out #{HELD_IDX}"
@@ -307,10 +467,10 @@ def main():
         d = np.asarray(MOVE_DIR, float)
         d = d / (np.linalg.norm(d) + 1e-12)
         pos_delta = MOVE_MAG * d
-        traj = make_quintic_pose(pos_delta, np.zeros(3), ramp=MOVE_RAMP,
+        traj = make_quintic_pose(pos_delta, np.deg2rad(MOVE_ROT), ramp=MOVE_RAMP,
                                  hold=HOLD, base_pos=np.asarray(BASE_POS, float))
         t_end = HOLD + MOVE_RAMP + MOVE_MARGIN
-        title = f"move {np.round(MOVE_DIR, 2)}·{MOVE_MAG:g}m  ramp {MOVE_RAMP:g}s"
+        title = f"move {np.round(MOVE_DIR, 2)}·{MOVE_MAG:g}m  ramp {MOVE_RAMP:g}s   {rot_descr(traj, t_end)}"
         print(f"QUINTIC MOVE: dir {np.round(d, 3)} · {MOVE_MAG:g} m = dpos {np.round(pos_delta, 2)}  "
               f"ramp {MOVE_RAMP:g}s  t_end {t_end:.0f}s\n")
     elif SHOWCASE is not None:
@@ -370,7 +530,16 @@ def main():
     print_metrics(net, opt)
 
     plot_compare(net, opt, title=title)
-    plt.show()
+    if TOP_VIEW:
+        plot_top_view(net, opt, title=title)
+    if OPT_TRAJ_PLOT:
+        plot_optimizer_only(opt, title=title)
+    if REF_PLOT:
+        plot_reference(opt, title=title)
+    if SAVE_DIR:
+        save_all_figs(SAVE_DIR)
+    if SHOW:
+        plt.show()
 
 
 if __name__ == "__main__":

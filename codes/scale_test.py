@@ -9,18 +9,20 @@ scale-heterogeneity / normalization worry.
 PLOTS (PLOT_SCALES): for each chosen scale, the usual per-run figures for the POLICY rollout:
 load position xyz (vs reference), drone velocity norms (vs epsilon), and 3-D drone+load trajectories.
 """
+import os
+import re
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from residual_marl_env import ResidualMARLEnv
 from networks import Actor
-from controller import make_quintic_pose
+from controller import make_quintic_pose, get_reference_trajectory
 from expert_reference import expert_path, training_pairs   # expert_path: MOVE_DIR quintics; training_pairs: custom lib
 from collect_il_data import T_END
 from trajectories import BASE_POS, HOLD
 from mappo import DESYNC, EVAL_SEED, EVAL_DELAYS
 
-CKPT = "residual_mappo_overfit.pt"          # change to the policy you want to test
+CKPT = "residual_mappo_r4base_wide.pt"          # change to the policy you want to test
 SCALES = [16.0]      # +x displacement (m)
 PLOT_SCALES = SCALES                # which scale(s) to draw the usual per-run plots for
 RAMP = 48.0                          # quintic move duration (s)
@@ -28,14 +30,23 @@ END_TIME = HOLD + RAMP + 1        # episode horizon: cover hold + full move + ta
 GRACE = 20
 DESYNC_ON = True                    # False -> CLEAN plant: zero pos/vel noise + zero control delays
 MOVE_DIR = (0.5, 0.5, 1.0)           # move DIRECTION; per-scale displacement = MOVE_DIR * SCALE (e.g. (0,1,0)=+y)
-USE_CUSTOM = False                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
+USE_CUSTOM = True                   # True -> ignore MOVE_DIR/SCALES, test a custom_set() trajectory instead
 CUSTOM_IDX = 0                      # which custom (const-velocity solver-engaging move): 0 +x, 1 +y, 2 +x+y,
                                      #   3 -x+y, 4 +x-y  (see trajectories.CUSTOM_VELS). Runs at its native T_END horizon.
+USE_DEFAULT = True                 # True -> ignore MOVE_DIR/SCALES/custom, test the built-in DEFAULT trajectory
+                                     #   (the original piecewise straight-line, traj=None; runs at T_END). Overrides USE_CUSTOM.
 DESYNC_CFG = DESYNC if DESYNC_ON else dict(pos_noise=0.0, vel_noise=0.0, noise_corr=0.0)
 DELAYS = EVAL_DELAYS if DESYNC_ON else [0, 0, 0, 0]
 BLOWUP_V = 1.0e6     # scale_test-ONLY divergence guard (env default 100). Raised so the EXPLOSION gets
                      #   RECORDED as a visible spike instead of truncating at ~100. Training env is separate
                      #   -> mappo keeps the default 100 and still truncates early; this does NOT affect it.
+
+
+# SAVING: paste a directory here to auto-save EVERY open figure into it as a named PNG — bypasses the clunky
+# GUI save dialog entirely. "" -> don't save (interactive window only). Names come from each figure's title.
+SAVE_DIR = ""          # e.g. "/home/hisham/thesis_plots"  (created if missing)
+SAVE_DPI = 150         # PNG resolution
+SHOW = True            # also show the interactive window(s); set False to save-only (faster / headless)
 
 
 def load_actor(env):
@@ -120,6 +131,20 @@ def _mark_times(ax, t, xyz, n=TIME_MARKS, color="k", label=True):
             ax.text(x, y, z, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
 
 
+def _mark_times_2d(ax, t, xy, n=TIME_MARKS, color="k", label=True):
+    """2-D (X-Y) analogue of _mark_times: n evenly-spaced t=Xs markers along a plan-view path.
+    xy: (T,>=2) positions on the same time grid as t."""
+    if n <= 0 or len(t) < 2:
+        return
+    t = np.asarray(t)
+    for tm in np.linspace(t[0], t[-1], n):
+        k = min(int(np.argmin(np.abs(t - tm))), len(xy) - 1)   # clamp (path may be 1 sample shorter)
+        x, y = xy[k, 0], xy[k, 1]
+        ax.plot([x], [y], "o", color=color, ms=4, mfc="white", mew=1.2, zorder=6)
+        if label:
+            ax.text(x, y, f" t={t[k]:.0f}s", fontsize=7, color=color, zorder=7)
+
+
 def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
     if end_time is None:
         end_time = END_TIME
@@ -167,6 +192,18 @@ def plot_run(hist, traj, eps, tag_label, mode="", end_time=None):
     ax3.set_xlabel("X (m)"); ax3.set_ylabel("Y (m)"); ax3.set_zlabel("Z (m)")
     ax3.set_title(f"Drone + load trajectories — {tag}"); ax3.legend()
 
+    # 4. Top-down (X-Y) view — added automatically for custom / default trajectories (plan-view companion to #3)
+    if USE_CUSTOM or USE_DEFAULT:
+        plt.figure(figsize=(7.5, 7.5))
+        axt = plt.gca()
+        for i in range(n):
+            axt.plot(dpos[s0:, i, 0], dpos[s0:, i, 1], color=f"C{i}", label=f"Drone {i+1}")
+            _mark_times_2d(axt, t[s0:], dpos[s0:, i, :], color=f"C{i}", label=True)
+        axt.plot(load[s0:, 0], load[s0:, 1], "k--", lw=2, label="Load")
+        axt.set_xlabel("X (m)"); axt.set_ylabel("Y (m)")
+        axt.set_aspect("equal", adjustable="datalim")            # true plan-view geometry
+        axt.set_title(f"Top view (X-Y) — {tag}"); axt.legend(); axt.grid(True)
+
 
 def fmt(m):
     # m = (loop, load, loopMSE, loadMSE, sat_lam, sat_w, blew, blow_loadoff, blow_vmax, blow_t)
@@ -180,8 +217,40 @@ def fmt(m):
     return pre + f"   BLEW @ {m[9]:.1f}s  load {m[7]:.2f}m off  vmax {m[8]:.0f} m/s"
 
 
+def _fig_name(fig, idx):
+    """Filename stem = the figure's TITLE (suptitle, else the first non-empty axes title), with only
+    filesystem-illegal characters replaced so the .png reads like the plot. Falls back to fig<idx>."""
+    txt = ""
+    st = getattr(fig, "_suptitle", None)
+    if st is not None:
+        txt = st.get_text()
+    if not txt:
+        for ax in fig.axes:
+            if ax.get_title():
+                txt = ax.get_title(); break
+    txt = re.sub(r'[/\\:*?"<>|\n\t]+', "_", txt)     # replace ONLY path-illegal chars (keep spaces, —, ·)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt or f"fig{idx}"
+
+
+def save_all_figs(save_dir, dpi=SAVE_DPI):
+    """Save every open figure into save_dir as <title>.png — no GUI dialog. De-dupes repeated titles."""
+    save_dir = os.path.expanduser(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    seen = {}
+    for idx in plt.get_fignums():
+        fig = plt.figure(idx)
+        name = _fig_name(fig, idx)
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:                           # same title twice -> append a counter
+            name = f"{name} ({seen[name]})"
+        path = os.path.join(save_dir, f"{name}.png")
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        print(f"saved {path}")
+
+
 def main():
-    horizon = T_END if USE_CUSTOM else END_TIME       # customs span [hold, hold+move_dur] at T_END
+    horizon = T_END if (USE_CUSTOM or USE_DEFAULT) else END_TIME   # customs/default span [hold, ...] at T_END
     env = ResidualMARLEnv(**DESYNC_CFG, end_time=horizon, blowup_v=BLOWUP_V)
     actor, om, os_ = load_actor(env)
 
@@ -197,7 +266,14 @@ def main():
             if hist_p and len(hist_p["t"]) > 1:
                 plot_run(hist_p, traj, env.epsilon, plot_tag, "policy", horizon)
 
-    if USE_CUSTOM:
+    if USE_DEFAULT:
+        default_traj = lambda tt: get_reference_trajectory(tt, None)   # built-in piecewise straight-line
+        dpos, _, _ = expert_path(default_traj, horizon)               # expert carrier path for the loop metric
+        print(f"scale test  ckpt={CKPT}  DEFAULT straight-line  desync={'ON' if DESYNC_ON else 'OFF (clean)'}"
+              f"  (mean over episode, GRACE-skipped)\n")
+        print(f"{'traj':<9}{'mode':<8}{'loop':>8}{'load':>8}{'loopMSE':>10}{'loadMSE':>10}{'sat_lam':>9}{'sat_w':>8}")
+        run_one(default_traj, dpos, "default", "default straight-line", do_plot=True)
+    elif USE_CUSTOM:
         from trajectories import custom_set
         pairs, n_anchor = training_pairs()               # anchors (customs) precomputed in expert_lib.npz
         assert CUSTOM_IDX < n_anchor, f"CUSTOM_IDX {CUSTOM_IDX} >= {n_anchor} customs"
@@ -216,7 +292,10 @@ def main():
             dpos, _, _ = expert_path(traj, END_TIME)
             run_one(traj, dpos, f"{s:.1f}", f"{s:.0f} m {tuple(MOVE_DIR)}", do_plot=(s in PLOT_SCALES))
     env.close()
-    plt.show()
+    if SAVE_DIR:
+        save_all_figs(SAVE_DIR)
+    if SHOW:
+        plt.show()
 
 
 if __name__ == "__main__":

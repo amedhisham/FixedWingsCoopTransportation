@@ -26,8 +26,10 @@ Multiple fixed-wings UAVs need to coordinate among themselves in order to
 allow the payload to stay stationary while they are loitering. This
 coordination is also needed in many other scenarios in the trajectory
 control of the payload. For this reason, most previous efforts were using
-multirotors. Recent works by [3],[4] showed that it is possible to
-calculate online coordinated trajectories. The solution however, was based
+multirotors. Recent works by [3],[4] and [5] showed that it is possible to
+calculate coordinated trajectories for the carriers online, such trajectories
+would respect the non-stopping condition while also maintaining load tracking. 
+The solution however, was based
 on a centralized controller that calculated all the trajectories and then
 assigns each carrier its trajectory. Additionally, to calculate the
 trajectories online it had to solve an NLP each time step. This makes
@@ -87,8 +89,9 @@ noise and delay, leading to desynchronization in the load state between the
 different carriers. Therefore, the policy needs to learn good actions with
 limited and potentially outdated information. This naturally leads to a
 Partially Observable Markov Decision Process (POMDP) problem formulation.
-\_\_\_\_\_might add some sentences here about the history thing\_\_\_\_ .
-Finally, the problem has many other aspects that are beyond the scope of
+Reinforcement Learning (RL) provides a natural framework for learning control 
+policies in such uncertain and partially observable environments.Finally, 
+the problem has many other aspects that are beyond the scope of
 this thesis (e.g. enforcing a minimum turning radius).
 
 The goal of this thesis is to answer whether a fully decentralized policy

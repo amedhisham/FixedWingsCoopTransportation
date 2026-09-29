@@ -18,6 +18,7 @@ Pick the trajectory with SHOWCASE_KIND ('short'/'long') + SHOWCASE_IDX (deploy_p
 """
 
 import os
+import re
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -33,14 +34,55 @@ from mappo import DESYNC as TRAIN_DESYNC          # the training noise levels
 N = 4
 EPSILON = 0.25
 MODE = "PURE"             # "PURE" (vs ideal, no noise) | "NOISY" (vs base controller under noise)
-SHOWCASE_KIND = "long"    # "short" (25 s) | "long" (35 s)
-SHOWCASE_IDX = 1          # trajectory in showcase_set(KIND): 0 = line, 1.. = quintics
-POLICY_PATH = "residual_mappo_gt2.pt"   # trained residual to evaluate
+SHOWCASE_KIND = "short"    # "short" (25 s) | "long" (35 s)
+SHOWCASE_IDX = 0         # trajectory in showcase_set(KIND): 0 = line, 1.. = quintics
+POLICY_PATH = "residual_mappo_r4base_wide.pt"   # trained residual to evaluate. MUST match the CURRENT env obs
+                                                #   dim (98). Old 44-dim nets (e.g. residual_mappo_r4base.pt)
+                                                #   predate this obs space and cannot run here. load_policy infers
+                                                #   the hidden width from the checkpoint, so 128- or 256-wide both load.
 ZERO_DW = False           # zero the delta_wrench head at apply -> delta_lambda-only ablation
 
 # Held-out disturbance scenario (never trained on): different noise seed + delay assignment.
 GEN_SEED = 8888
-GEN_DELAYS = [2, 2, 2, 2]   
+GEN_DELAYS = [2, 2, 2, 2]
+
+# SAVING: paste a directory here to auto-save EVERY open figure into it as a named PNG — bypasses the clunky
+# GUI save dialog entirely. "" -> don't save (interactive window only). Names come from each figure's title.
+SAVE_DIR = ""          # e.g. "/home/hisham/thesis_plots"  (created if missing)
+SAVE_DPI = 150         # PNG resolution
+SHOW = True            # also show the interactive window(s); set False to save-only (faster / headless)
+
+
+def _fig_name(fig, idx):
+    """Filename stem = the figure's TITLE (suptitle, else the first non-empty axes title), with only
+    filesystem-illegal characters replaced so the .png reads like the plot. Falls back to fig<idx>."""
+    txt = ""
+    st = getattr(fig, "_suptitle", None)
+    if st is not None:
+        txt = st.get_text()
+    if not txt:
+        for ax in fig.axes:
+            if ax.get_title():
+                txt = ax.get_title(); break
+    txt = re.sub(r'[/\\:*?"<>|\n\t]+', "_", txt)     # replace ONLY path-illegal chars (keep spaces, —, ·)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt or f"fig{idx}"
+
+
+def save_all_figs(save_dir, dpi=SAVE_DPI):
+    """Save every open figure into save_dir as <title>.png — no GUI dialog. De-dupes repeated titles."""
+    save_dir = os.path.expanduser(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    seen = {}
+    for idx in plt.get_fignums():
+        fig = plt.figure(idx)
+        name = _fig_name(fig, idx)
+        seen[name] = seen.get(name, 0) + 1
+        if seen[name] > 1:                           # same title twice -> append a counter
+            name = f"{name} ({seen[name]})"
+        path = os.path.join(save_dir, f"{name}.png")
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        print(f"saved {path}")
 
 
 def _set_axes_equal_3d(ax):
@@ -56,9 +98,13 @@ def _set_axes_equal_3d(ax):
 
 def load_policy(path):
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    actor = Actor(obs_dim=ck["obs_dim"], act_dim=ck["act_dim"])
-    actor.load_state_dict(ck["state_dict"]); actor.eval()
-    return actor, ck["obs_mean"].astype(np.float32), ck["obs_std"].astype(np.float32)
+    sd = ck["state_dict"]
+    hidden = (sd["body.0.weight"].shape[0], sd["body.2.weight"].shape[0])   # INFER width (128 or 256...)
+    actor = Actor(obs_dim=ck["obs_dim"], act_dim=ck["act_dim"], hidden=hidden)
+    actor.load_state_dict(sd); actor.eval()
+    om = ck["obs_mean"].astype(np.float32).reshape(-1)
+    os_ = ck["obs_std"].astype(np.float32).reshape(-1)
+    return actor, om, os_
 
 
 def run_episode(policy=None, seed=None, traj=None, end_time=25.0, zero_dw=False, **kwargs):
@@ -155,6 +201,19 @@ if __name__ == "__main__":
     ax3d.legend()
     _set_axes_equal_3d(ax3d)
 
+    # 1b. Top-down (X-Y) view of the drones + load — plan-view companion to the 3-D plot (same styling:
+    #     RL solid, comparison FADED). Squashes Z; useful when the XY nullspace pattern is the story.
+    plt.figure(figsize=(7.5, 7.5))
+    axt = plt.gca()
+    for i in range(N):
+        axt.plot(cmp_["dpos"][i][:, 0], cmp_["dpos"][i][:, 1], color=f"C{i}", lw=2.6, alpha=0.28)
+        axt.plot(rl["dpos"][i][:, 0], rl["dpos"][i][:, 1], color=f"C{i}", lw=1.3, label=f"Drone {i+1}")
+    axt.plot(rl["load"][:, 0], rl["load"][:, 1], "k--", lw=2, label="Load")
+    axt.set_xlabel("X (m)"); axt.set_ylabel("Y (m)")
+    axt.set_aspect("equal", adjustable="datalim")
+    axt.set_title(f"Top view (X-Y) — {lbl_rl} (solid) vs {lbl_cmp} (faded)\n{SHOWCASE_KIND} #{SHOWCASE_IDX}: {label}")
+    axt.legend(); axt.grid(True)
+
     # 2. Drone velocity norms — RL solid, comparison FADED. NOISY base -> spikes/tension collapse.
     plt.figure()
     for i in range(N):
@@ -190,4 +249,7 @@ if __name__ == "__main__":
     ax5.set_title("Load XYZ trajectory"); ax5.legend()
     _set_axes_equal_3d(ax5)
 
-    plt.show()
+    if SAVE_DIR:
+        save_all_figs(SAVE_DIR)
+    if SHOW:
+        plt.show()
