@@ -1,7 +1,7 @@
 \chapter{System Modelling and Problem formulation}
 
 The most straightforward way to test the decentralization hypothesis is
-to build upon the controller and optimizer introduced in [4]. We will refer
+to build upon the controller and optimizer introduced in [5]. We will refer
 to these controller and optimizer as the Classical Control Stack (CCS).
 Instead of forcing the policy to learn everything
 from scratch, we can rely on the CCS since can already fly and generate trajectories 
@@ -14,7 +14,8 @@ easily to decentralization, hence, we will exploit this property and use
 parts of it and its architecture. This will be discussed in detail in
 later sections, for now we start by defining the problem, how the
 classical control pipeline solves it and what will be our modifications
-to decentralize it. The system model and the CCS were mainly developed in[3] and [4].
+to decentralize it. The system model and the CCS were mainly developed in[3],
+[4] and [5].
 
 \section{System Model}
 
@@ -25,7 +26,7 @@ positions between the cables and the payload are known. Refer to
 Figure~\ref{fig:system-model} for a schematic representation of the
 considered scenario.
 
-Remark 1: In [3], it is established that a minimum of three non-stopping
+\textbf{Remark:} In [4], it is established that a minimum of three non-stopping
 carriers are needed to maintain a cable suspended load static while
 allowing for each carrier to maintain a loitering positive velocity norm.
 
@@ -55,7 +56,7 @@ direction in the inertial frame).
   \caption{Schematic representation of $n$ non-stopping fixed-wing
   carriers connected via cables to a rigid payload, showing the inertial
   world frame $\mathcal{F}_W$ and the payload's body-fixed frame
-  $\mathcal{F}_B$.}
+  $\mathcal{F}_B$. Reproduced from [5].}
   \label{fig:system-model}
 \end{figure}
 
@@ -168,7 +169,7 @@ forces without changing the applied wrench on the load and by extension
 its motion. Since this work doesn’t go into the design of the classical
 control pipeline, the choice of $N(R_L(t))$ to parameterize these
 internal forces by a set $\lambda(t)$ of $n$ functions was used as is
-from [3].
+from [4].
 
 As a consequence of this architecture, the load trajectory tracking is
 cleanly isolated from the carrier trajectory feasibility (i.e.
@@ -225,7 +226,7 @@ with tunable gains $K_p, K_v, K_i, K_R, K_\omega, K_{iR} \in
 
 By construction, the internal cable force components $f_\lambda(t)$ in
 \eqref{eq:force-decomposition} do not have an effect on the wrench
-applied to the load CoM. In [4], a method of controlling these forces
+applied to the load CoM. In [5], a method of controlling these forces
 online is formulated. An optimization problem is solved at each time step
 to keep the carrier velocities above a specified threshold.
 
@@ -247,7 +248,7 @@ where $\lambda(t)$ represents a functional variable to be optimized, and
 we use the short hand $G(t) = G(R_L(t))$ and $N(t) = N(R_L(t))$.
 
 The choice of $\lambda(t)$ and design of $N(t)$ was extensively studied
-in [3] and [4]. In this work, it is sufficient for us to just take them
+in [4] and [5]. In this work, it is sufficient for us to just take them
 as inputs. $\lambda(t)$ is of particular interest, since it will be the
 main lever to shape the internal forces of the carriers. It is chosen to
 be:
@@ -258,8 +259,9 @@ be:
 \end{equation}
 
 Where the parameters $\phi_i \in [-\pi, \pi)$, $i = 1, \dots, n$ represent
-the constant phase shifts of the carrier (not necessarily distinct but
-some have to be).
+the constant phase shifts of the carriers (not necessarily distinct but
+some have to be). Note that this choice of the phase shifts only works for
+an even number of carriers[4]. 
 
 Whereas the pair $x(t) = (\xi(t), A(t))$ represent the magnitude and the
 frequency and are optimized online to enforce a desired lower-bound on
@@ -312,7 +314,8 @@ the low level controller of each drone.
   \includegraphics[width=\textwidth]{figures/fig-ccs-pipeline.png}
   \caption{Overall classical control pipeline scheme, including the
   load-wrench controller (green block), the carrier-trajectory generator
-  (blue blocks), and the optimization layer (red block).}
+  (blue blocks), and the optimization layer (red block). Reproduced from
+  [5].}
   \label{fig:ccs-pipeline}
 \end{figure}
 
@@ -329,7 +332,32 @@ asynchronous observations).
 
 \noindent\textbf{Phase One: Imitation Learning(IL)/Behavioral Cloning(BC)}
 
-\noindent Action Space: $\lambda(t) \in \mathbb{R}^n$
+\noindent\textbf{Objective of Phase One}
+
+Since the optimizer was already shown to work well, the proposed solution
+in this phase is to distill its behavior into a student policy using IL. 
+The goal would be to
+train a Neural Network (NN) to mimic the output of the optimizer, eliminating
+the need for using it. 
+
+This
+dramatically reduces the computational cost allowing the trajectories to be
+calculated online if deployed in real time and also lays the ground work for
+Phase Two. Additionally, this makes deploying or training the system entirely 
+on a GPU much more feasible, since calculating \(\lambda(t)\) in the CCS 
+relies on standard NLP formulations using tools such as CasADi and solvers 
+such as IPOPT, which rely on CPU-based computation. In contrast, a NN can be 
+trained and used for inference on a GPU, making the calculation of
+\(\lambda(t)\) GPU-based and enabling parallelization.
+
+
+
+This phase does not handle decentralization but just 
+focuses on replacing the computationally expensive optimizer with a cheaper
+policy without changing the architecture. So the student policy is trained 
+and deployed centrally with access to clean global states. 
+
+\noindent\textbf{Action Space:} $\lambda(t) \in \mathbb{R}^n$
 
 \begin{itemize}
   \item Keep wrench controller and nullspace matrix
@@ -350,11 +378,7 @@ asynchronous observations).
   \item Doesn’t handle desynchronized or heterogeneous observations
 \end{itemize}
 
-Since the optimizer was already shown to work well, the proposed solution
-in this phase is to distill its behavior using IL. The goal would be to
-train a Neural Network (NN) to mimic the output of the optimizer. This 
-dramatically reduces the computational cost allowing the trajectories to be
-calculated online. We face
+We face
 an interesting choice here, either to train the NN to output $\lambda(t)$
 directly or output just $\xi(t)$, $A(t)$ and we can then reconstruct
 $\lambda(t)$ using the time $t$ and phase shifts $\phi_i$ using eq.
@@ -371,7 +395,27 @@ with the frequency and amplitude being our only two degrees of freedom.
 
 \noindent\textbf{Phase two:  Residual MARL}
 
-\noindent Action Space: $\delta f \in \mathbb{R}^{3n}$
+\noindent\textbf{Objective of Phase Two}
+
+The goal of phase two is to move from one centralized controller that 
+calculates $f_g(t)$ and one centralized student policy that calculates 
+$f_\lambda(t)$ (from Phase One) into a decentralized controller and policy. 
+For brevity, the controller and student policy will be
+later referred to together as the base controller, as they provide the 
+foundational control structure of the final architecture. The residual RL 
+policy is subsequently added on top of this base controller to form the 
+complete architecture.
+
+In this setup, each carrier takes its own measurements (potentially noisy and 
+desynchronized) and uses local modified base controller (modified to run 
+decentrally) and its local residual policy to calculate its own 
+action. This will require modifying the architecture and using RL to help
+each carrier take "good" actions under this loss of information. The local 
+instances of the base controller and residual policy will be homogeneous 
+(i.e. they are all identical).
+
+
+\noindent\textbf{Action Space:} $\delta f \in \mathbb{R}^{3n}$
 
 \begin{itemize}
   \item Keep wrench controller and use the NN that behaviorally clones the optimizer.
@@ -388,5 +432,8 @@ with the frequency and amplitude being our only two degrees of freedom.
   \item Uses the residual force to maintain sensible carrier trajectories and load trajectory tracking
 \end{itemize}
 
-The main motivation behind doing phase one first is to ease the
-computational burden of phase two.
+Phase One (IL) was chosen to be implemented before Phase Two (MARL) because
+to train the MARL policy will require running the simulation environment along
+with the base controller for potentially billions of steps. This makes the
+training process extremely senstive to the computational cost per step and 
+therefore it is necessary to reduce it where possible.

@@ -1,0 +1,34 @@
+python deploy_compare.py
+QUINTIC MOVE: dir [-0.06 -0.88 -0.47] · 3 m = dpos [-0.18 -2.64 -1.41]  ramp 20s  t_end 23s
+
+running net (with in-loop EMA) ...
+running optimizer (CasADi) ...
+
+            track_mean  track_max    vmin
+        net     0.0186     0.0310   0.000
+  optimizer     0.0186     0.0310   0.000
+solver engaged: 0.0% of steps  (deadband 0.3)
+
+analytic v_Ri closest approach to eps: 0.922  (eps=0.25 -> slack, never binds)
+solver pinned to UPPER bound (+delta): xi 0% of steps, A 0%
+xi 2.00 -> 2.00   A 1.20 -> 1.20
+
+metric                                 net   optimizer
+------------------------------------------------------
+load track MSE (m^2)               0.00043     0.00043
+load track RMSE (m)                0.02066     0.02066
+load track max (m)                 0.03105     0.03105
+
+carrier vs OPTIMIZER (ref)       MSE (m^2)
+  drone 1                          0.00012
+  drone 2                          0.00012
+  drone 3                          0.00012
+  drone 4                          0.00012
+  ALL drones                       0.00012   (RMSE 0.0111 m)
+
+lambda vs OPTIMIZER (ref)              MSE
+  drone 1                          0.00030
+  drone 2                          0.00032
+  drone 3                          0.00030
+  drone 4                          0.00032
+  ALL drones                       0.00031

@@ -31,15 +31,18 @@ In [8], a decentralized cooperative
 control policy was learnt directly through multi-agent reinforcement
 learning (MARL), trading explicit trajectory-planning capability for much
 cheaper computational cost and greater robustness to heterogeneous agents
-and agent failure. Additionally, the policy was ony tasked to learn high level
+and agent failure. Additionally, the policy was only tasked to learn high level
 commands/action such as reference acceleration. The action is then handed to 
 a low level controller that executes the actual tracking. In this case, 
 since the policy had dramatically lower computational cost, actual 
-onboard execution was possible.
+onboard execution was possible. The policy did not rely on any inter-drone 
+communication or measurements and relied on observations such as the load 
+state as a way of implicit communication.
 
 In [9], instead of relying on a low level controller, an end-to-end 
-decentralized cooperative control policy was learnt. The policy takes as
-input the sensor measurements and outputs the PWM directly to drones' motors.
+decentralized cooan end-toperative control policy was learnt using RL. The policy takes as
+input the sensor measurements and outputs the Pulse-width modulation (PWM) 
+directly to drones' motors.
 This eliminates the need for a low level controller and simplifies the 
 deployment. However, while the policy did not rely on explicit communication
 between the drones, it relied on inter-drone measurements, with each drone 
@@ -71,7 +74,7 @@ In[4], an algorithm for generating coordinated non-stop trajectories for
 three or more carriers holding a cable-suspended load is presented. 
 The approach uses Hamiltonian cycles and graph theory to generate the 
 coordinated trajectories, with the results demonstrated through numerical 
-simulations in MATLAB/Simulink. However, only steady-state equilibrium is 
+simulations in MATLAB/Simulink. Similar to [3], only steady-state equilibrium is 
 considered, without addressing the transient behavior of the system. 
 Furthermore, the carrier reference trajectories are precalculated and there 
 is no closed-loop control, meaning that the trajectories cannot react to 
@@ -88,8 +91,8 @@ forces to enforce a strictly positive carrier velocity norm. The approach
 is experimentally validated using Crazyflie quadrotors and the Crazyswarm 
 software, with a Vicon motion capture system, in addition to numerical 
 simulations in MATLAB/Simulink. However, the controller is centralized,
-is not deployed onboard, and assumes perfect knowledge of the system and clean,
-noise-free measurements. Furthermore, the trajectories are calculated using a
+is not deployed onboard, and assumes perfect knowledge of the system.
+Furthermore, the trajectories are calculated using a
 centralized controller together with a Nonlinear Programming (NLP) 
 solver/optimizer, resulting in a high computational cost.
 

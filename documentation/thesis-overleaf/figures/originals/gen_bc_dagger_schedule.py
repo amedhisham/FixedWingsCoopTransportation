@@ -25,9 +25,9 @@ ax.axvspan(0.5, 15.3, color=ORANGE, alpha=0.10, zorder=0)
 ax.axvline(0.5, color="#666666", linestyle=(0, (5, 3)), linewidth=1.1, zorder=1)
 
 ax.plot(iters, expert_weight, color=BLUE, marker="o", markersize=6,
-        linewidth=2.4, label="Expert Weight (1 − α)", zorder=3)
+        linewidth=2.4, label=r"Expert Weight ($\beta$)", zorder=3)
 ax.plot(iters, policy_weight, color=ORANGE, marker="s", markersize=6,
-        linewidth=2.4, label="Policy Weight (α)", zorder=3)
+        linewidth=2.4, label=r"Policy Weight (1 $-$ $\beta$)", zorder=3)
 
 ax.set_xlim(-0.4, 15.4)
 ax.set_ylim(-0.03, 1.08)
@@ -46,7 +46,7 @@ handles, labels = ax.get_legend_handles_labels()
 ax.legend(handles=handles + [phase1_patch, phase2_patch], loc="center right",
           fontsize=10, framealpha=0.95, edgecolor="#bbbbbb")
 
-fig.text(0.5, 0.535, "Mechanics: Phase 1 Supervised Learning vs. Phase 2 DAgger",
+fig.text(0.5, 0.535, "Phase 1 Supervised Learning vs. Phase 2 DAgger",
           ha="center", va="center", fontsize=13.5, fontweight="bold", color=DARKBLUE)
 
 # --- Bottom boxes -----------------------------------------------------
@@ -60,20 +60,20 @@ box_style = dict(boxstyle="round,pad=0.02,rounding_size=0.02", linewidth=1.6)
 
 left_text = (
     r"$\bf{Phase\ 1:\ Initial\ Pass\ (Iter\ 0)}$" + "\n\n"
-    r"$\bullet$ Action: $a_0 = a_0^{*}$   ($\alpha = 0$)" + "\n"
+    r"$\bullet$ Action: $a_t = a_t^{*}$   ($\beta = 1$)" + "\n"
     r"$\bullet$ Goal: Pure expert trajectory collection" + "\n"
     r"    & initial fitting of $\pi_{\theta_0}$." + "\n"
     r"$\bullet$ Result: Baseline offline policy."
 )
 right_text = (
     r"$\bf{Phase\ 2:\ Policy\ Action\ Injection\ (Iter\ 1–15)}$" + "\n\n"
-    r"$\bullet$ Action: $a_t = (1-\alpha)\,a_t^{*} + \alpha\,\pi(s_t)$" + "\n"
-    r"$\bullet$ Visited States: $\alpha$ increases $0.1 \to 1.0$" + "\n"
-    r"    over the 15-step schedule." + "\n"
+    r"$\bullet$ Action: $a_t = \beta_t\,a_t^{*} + (1-\beta_t)\,\hat{a}_t$" + "\n"
+    r"$\bullet$ $\beta$ decreases $0.9 \to 0.0$ over the 15-step" + "\n"
+    r"    schedule." + "\n"
     r"$\bullet$ Goal: Exposes policy to its own mistakes" + "\n"
-    r"    while expert re-labels $s_{t+1}$ with $a_{t+1}^{*}$." + "\n"
+    r"    while expert re-labels $s_t$ with $a_t^{*}$." + "\n"
     r"$\bullet$ Data is aggregated and the network is" + "\n"
-    r"    retrained on the full dataset each iteration."
+    r"    retrained on the dataset each iteration."
 )
 
 box_ax.add_patch(FancyBboxPatch((0.045, 0.25), 0.38, 0.62, facecolor="#eaf2fb",
@@ -91,6 +91,6 @@ arrow = FancyArrowPatch((0.445, 0.56), (0.555, 0.56), transform=box_ax.transAxes
                          shrinkA=0, shrinkB=0, color="#444444")
 box_ax.add_patch(arrow)
 
-fig.savefig("/tmp/claude-1000/-media-hisham-New-Volume-Masters-Internship-and-Thesis-prep-FixedWingsCoopTransportation/6e7632d7-2270-413b-bb70-8394a88bf0b9/scratchpad/bc_dagger_new.png",
+fig.savefig("/tmp/claude-1000/-media-hisham-New-Volume-Masters-Internship-and-Thesis-prep-FixedWingsCoopTransportation/6e7632d7-2270-413b-bb70-8394a88bf0b9/scratchpad/bc_dagger_beta.png",
             dpi=200, facecolor="white")
 print("done")

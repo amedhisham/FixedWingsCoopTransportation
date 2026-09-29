@@ -16,7 +16,7 @@
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
 \@writefile{toc}{\contentsline {section}{\numberline {3.1}System Model}{9}{}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {3.1}{\ignorespaces Schematic representation of $n$ non-stopping fixed-wing carriers connected via cables to a rigid payload, showing the inertial world frame $\mathcal  {F}_W$ and the payload's body-fixed frame $\mathcal  {F}_B$.}}{10}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3.1}{\ignorespaces Schematic representation of $n$ non-stopping fixed-wing carriers connected via cables to a rigid payload, showing the inertial world frame $\mathcal  {F}_W$ and the payload's body-fixed frame $\mathcal  {F}_B$. Reproduced from [5].}}{10}{}\protected@file@percent }
 \newlabel{fig:system-model}{{3.1}{10}{System Model}{figure.3.1}{}}
 \newlabel{eq:carrier-position}{{3.1}{10}{System Model}{equation.3.1}{}}
 \newlabel{eq:carrier-velocity}{{3.2}{10}{System Model}{equation.3.2}{}}
@@ -40,80 +40,203 @@
 \newlabel{eq:lambda-def}{{3.17}{14}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.17}{}}
 \newlabel{eq:optimization-problem}{{3.18}{14}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.18}{}}
 \newlabel{eq:objective-function}{{3.19}{14}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{equation.3.19}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3.2}{\ignorespaces Overall classical control pipeline scheme, including the load-wrench controller (green block), the carrier-trajectory generator (blue blocks), and the optimization layer (red block).}}{15}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3.2}{\ignorespaces Overall classical control pipeline scheme, including the load-wrench controller (green block), the carrier-trajectory generator (blue blocks), and the optimization layer (red block). Reproduced from [5].}}{15}{}\protected@file@percent }
 \newlabel{fig:ccs-pipeline}{{3.2}{15}{Carrier Trajectory / Internal Force Calculation: Optimization layer}{figure.3.2}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {3.3}Learning-based methods}{15}{}\protected@file@percent }
-\newlabel{eq:il-action-force}{{3.20}{15}{Learning-based methods}{equation.3.20}{}}
-\newlabel{eq:il-nullspace-force}{{3.21}{15}{Learning-based methods}{equation.3.21}{}}
-\newlabel{eq:residual-action-force}{{3.22}{16}{Learning-based methods}{equation.3.22}{}}
-\@writefile{toc}{\contentsline {chapter}{\numberline {4}Methodology}{17}{}\protected@file@percent }
+\newlabel{eq:il-action-force}{{3.20}{16}{Learning-based methods}{equation.3.20}{}}
+\newlabel{eq:il-nullspace-force}{{3.21}{16}{Learning-based methods}{equation.3.21}{}}
+\newlabel{eq:residual-action-force}{{3.22}{17}{Learning-based methods}{equation.3.22}{}}
+\@writefile{toc}{\contentsline {chapter}{\numberline {4}Methodology}{18}{}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {4.1}General discussion on the decentralization of the controller}{17}{}\protected@file@percent }
-\newlabel{eq:decentralized-force}{{4.1}{17}{General discussion on the decentralization of the controller}{equation.4.1}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {4.2}Implementation details}{18}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4.3}Phase One : Imitation Learning}{19}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.1}State/Input Design}{20}{}\protected@file@percent }
-\newlabel{eq:fourier-basic}{{4.2}{22}{State/Input Design}{equation.4.2}{}}
-\newlabel{eq:fourier-general}{{4.3}{22}{State/Input Design}{equation.4.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.2}Dataset Aggregation (DAgger)}{23}{}\protected@file@percent }
-\newlabel{eq:dagger-mixing}{{4.4}{23}{Dataset Aggregation (DAgger)}{equation.4.4}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4.1}{\ignorespaces Behavioral Cloning Schedule: Phase 1 (Supervised Learning) $\rightarrow $ Phase 2 (DAgger).}}{25}{}\protected@file@percent }
-\newlabel{fig:bc-dagger-schedule}{{4.1}{25}{Dataset Aggregation (DAgger)}{figure.4.1}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4.2}{\ignorespaces Final dataset management strategy per DAgger iteration: new rollout data and a bin-stratified sample of the historical pool form the training set; after a successful iteration the new data is merged into the pool and excess points are evicted uniformly (respecting the per-bin minimum) to restore the size cap.}}{28}{}\protected@file@percent }
-\newlabel{fig:dataset-management}{{4.2}{28}{Dataset Aggregation (DAgger)}{figure.4.2}{}}
-\newlabel{eq:jitter-per-carrier}{{4.5}{29}{Dataset Aggregation (DAgger)}{equation.4.5}{}}
-\newlabel{eq:jitter-team}{{4.6}{29}{Dataset Aggregation (DAgger)}{equation.4.6}{}}
-\newlabel{eq:mse-per-carrier}{{4.7}{29}{Dataset Aggregation (DAgger)}{equation.4.7}{}}
-\newlabel{eq:mse-team}{{4.8}{30}{Dataset Aggregation (DAgger)}{equation.4.8}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.3}Generalization}{30}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4.4}Phase Two : Reinforcement Learning}{30}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.1}Introduction}{30}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.2}Action Space}{32}{}\protected@file@percent }
-\newlabel{eq:phase2-naive-action}{{4.9}{32}{Action Space}{equation.4.9}{}}
-\newlabel{eq:phase2-action-force}{{4.10}{32}{Action Space}{equation.4.10}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.3}Observation Space}{32}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.4}Reward function}{37}{}\protected@file@percent }
-\newlabel{eq:per-drone-reward}{{4.11}{38}{Reward function}{equation.4.11}{}}
-\newlabel{eq:team-reward}{{4.12}{38}{Reward function}{equation.4.12}{}}
-\newlabel{eq:manifold-term}{{4.13}{38}{Reward function}{equation.4.13}{}}
-\newlabel{eq:stall-term}{{4.14}{38}{Reward function}{equation.4.14}{}}
-\newlabel{eq:overspeed-term}{{4.15}{39}{Reward function}{equation.4.15}{}}
-\newlabel{eq:overshoot-term}{{4.16}{39}{Reward function}{equation.4.16}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4.1}General discussion on the decentralization of the controller}{18}{}\protected@file@percent }
+\newlabel{eq:decentralized-force}{{4.1}{18}{General discussion on the decentralization of the controller}{equation.4.1}{}}
+\newlabel{eq:lambda-def-recap}{{4.2}{19}{General discussion on the decentralization of the controller}{equation.4.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4.2}Implementation details}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.3}Phase One : Imitation Learning}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.1}State/Input Design}{22}{}\protected@file@percent }
+\newlabel{eq:log-spaced-taps}{{4.3}{23}{State/Input Design}{equation.4.3}{}}
+\newlabel{eq:fourier-basic}{{4.4}{24}{State/Input Design}{equation.4.4}{}}
+\newlabel{eq:fourier-general}{{4.5}{24}{State/Input Design}{equation.4.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.2}Dataset Aggregation (DAgger)}{25}{}\protected@file@percent }
+\newlabel{sec:dagger}{{4.3.2}{25}{Dataset Aggregation (DAgger)}{subsection.4.3.2}{}}
+\newlabel{eq:dagger-mixing}{{4.6}{26}{Dataset Aggregation (DAgger)}{equation.4.6}{}}
+\newlabel{eq:dagger-mixing-lambda}{{4.7}{26}{Dataset Aggregation (DAgger)}{equation.4.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.1}{\ignorespaces Behavioral Cloning Schedule: Phase 1 (Supervised Learning) $\rightarrow $ Phase 2 (DAgger).}}{27}{}\protected@file@percent }
+\newlabel{fig:bc-dagger-schedule}{{4.1}{27}{Dataset Aggregation (DAgger)}{figure.4.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.2}{\ignorespaces Final dataset management strategy per DAgger iteration: new rollout data and a bin-stratified sample of the historical pool form the training set; after a successful iteration the new data is merged into the pool and excess points are evicted uniformly (respecting the per-bin minimum) to restore the size cap.}}{31}{}\protected@file@percent }
+\newlabel{fig:dataset-management}{{4.2}{31}{Dataset Aggregation (DAgger)}{figure.4.2}{}}
+\newlabel{eq:jitter-per-carrier}{{4.8}{32}{Dataset Aggregation (DAgger)}{equation.4.8}{}}
+\newlabel{eq:jitter-team}{{4.9}{32}{Dataset Aggregation (DAgger)}{equation.4.9}{}}
+\newlabel{eq:mse-per-carrier}{{4.10}{32}{Dataset Aggregation (DAgger)}{equation.4.10}{}}
+\newlabel{eq:mse-team}{{4.11}{32}{Dataset Aggregation (DAgger)}{equation.4.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3.3}Generalization}{33}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4.4}Phase Two : Reinforcement Learning}{33}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.1}Introduction}{33}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.2}Action Space}{35}{}\protected@file@percent }
+\newlabel{eq:phase2-naive-action}{{4.12}{35}{Action Space}{equation.4.12}{}}
+\newlabel{eq:phase2-action-force}{{4.13}{35}{Action Space}{equation.4.13}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.3}Observation Space}{35}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.4}Reward function}{40}{}\protected@file@percent }
+\newlabel{eq:per-drone-reward}{{4.14}{41}{Reward function}{equation.4.14}{}}
+\newlabel{eq:team-reward}{{4.15}{41}{Reward function}{equation.4.15}{}}
+\newlabel{eq:manifold-term}{{4.16}{41}{Reward function}{equation.4.16}{}}
+\newlabel{eq:stall-term}{{4.17}{41}{Reward function}{equation.4.17}{}}
+\newlabel{eq:load-tracking-error}{{4.18}{42}{Reward function}{equation.4.18}{}}
+\newlabel{eq:overspeed-term}{{4.19}{42}{Reward function}{equation.4.19}{}}
 \gdef \LT@i {\LT@entry 
     {1}{112.15425pt}\LT@entry 
     {1}{184.99498pt}\LT@entry 
     {1}{148.57462pt}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{41}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.6}MAPPO implementation details}{41}{}\protected@file@percent }
-\newlabel{eq:advantage-estimate}{{4.17}{41}{MAPPO implementation details}{equation.4.17}{}}
-\newlabel{eq:critic-target}{{4.18}{41}{MAPPO implementation details}{equation.4.18}{}}
-\newlabel{eq:bc-combined-dataset}{{4.19}{42}{MAPPO implementation details}{equation.4.19}{}}
-\newlabel{eq:bc-loss}{{4.20}{42}{MAPPO implementation details}{equation.4.20}{}}
-\@writefile{toc}{\contentsline {chapter}{\numberline {5}Results and Discussion}{44}{}\protected@file@percent }
+\newlabel{eq:overshoot-term}{{4.20}{43}{Reward function}{equation.4.20}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{44}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4.6}MAPPO implementation details}{44}{}\protected@file@percent }
+\newlabel{eq:advantage-estimate}{{4.21}{44}{MAPPO implementation details}{equation.4.21}{}}
+\newlabel{eq:critic-target}{{4.22}{45}{MAPPO implementation details}{equation.4.22}{}}
+\newlabel{eq:bc-combined-dataset}{{4.23}{46}{MAPPO implementation details}{equation.4.23}{}}
+\newlabel{eq:bc-loss}{{4.24}{46}{MAPPO implementation details}{equation.4.24}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4.3}{\ignorespaces Overview of the MAPPO training loop and the environment step. Experience is collected by the decentralized actors interacting with the environment and stored in the rollout buffer. The critic evaluates the privileged states to produce the values used by GAE, and the resulting advantages and returns are used by the PPO update to update both the actor and the critic. The environment step is expanded in the bottom panel.}}{47}{}\protected@file@percent }
+\newlabel{fig:mappo-loop}{{4.3}{47}{MAPPO implementation details}{figure.4.3}{}}
+\@writefile{toc}{\contentsline {chapter}{\numberline {5}Results and Discussion}{48}{}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {section}{\numberline {5.1}Phase One : Imitation Learning}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.1}Single trajectory}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.1.1}Supervised Learning}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.1.2}DAgger}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.2}Analysis of failure modes}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.3}Generalization}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.1}Generalization across time}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.2}Generalization across distances}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.3}Generalization across directions}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5.2}Phase Two : Reinforcement Learning}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.1}Single trajectory}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.2}Analysis of failure modes}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.3}Generalization}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.1}Generalization across time}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.2}Generalization across distances}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.3}Generalization across directions}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.4}History-Augmented Observation Space}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.6}Behavior Cloning (BC) of multiple policies}{44}{}\protected@file@percent }
-\@writefile{toc}{\contentsline {chapter}{\numberline {6}Conclusion and Future Work}{45}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5.1}Phase One : Imitation Learning}{48}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.1}Single trajectory}{48}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.1}{\ignorespaces Load reference trajectory along the $x$-axis ($t_{end}=25$\,s).}}{48}{}\protected@file@percent }
+\newlabel{fig:reference-trajectory-x}{{5.1}{48}{Single trajectory}{figure.5.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.2}{\ignorespaces CCS carrier and load trajectories top view (X-Y) for a move of 11\,m along $x$ ($t_{end}=25$\,s).}}{49}{}\protected@file@percent }
+\newlabel{fig:expert-topview}{{5.2}{49}{Single trajectory}{figure.5.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.3}{\ignorespaces Optimizer $\lambda $ values for the same trajectory.}}{49}{}\protected@file@percent }
+\newlabel{fig:expert-lambdas}{{5.3}{49}{Single trajectory}{figure.5.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.4}{\ignorespaces CCS carrier velocity norms for the same trajectory.}}{50}{}\protected@file@percent }
+\newlabel{fig:expert-velocities}{{5.4}{50}{Single trajectory}{figure.5.4}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.5}{\ignorespaces Optimizer decision variables $\lambda _i = A\cos (\xi t + \phi _i)$ for the same trajectory.}}{50}{}\protected@file@percent }
+\newlabel{fig:expert-decision-vars}{{5.5}{50}{Single trajectory}{figure.5.5}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.1.1}Supervised Learning}{51}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.6}{\ignorespaces $\lambda $ produced by the supervised-only policy while flying, showing uncontrolled jitter.}}{51}{}\protected@file@percent }
+\newlabel{fig:sl-lambda}{{5.6}{51}{Supervised Learning}{figure.5.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.7}{\ignorespaces Carriers and load Trajectory top view (X-Y) trajectories of the policy trained with supervised learning only.}}{52}{}\protected@file@percent }
+\newlabel{fig:sl-xy-trajectories}{{5.7}{52}{Supervised Learning}{figure.5.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.8}{\ignorespaces Drone velocity norms of the policy trained with supervised learning only.}}{53}{}\protected@file@percent }
+\newlabel{fig:sl-velocity-norms}{{5.8}{53}{Supervised Learning}{figure.5.8}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.1.2}DAgger}{53}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.9}{\ignorespaces $\lambda $ per carrier: DAgger-trained policy (network) vs optimizer.}}{54}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-lambdas}{{5.9}{54}{DAgger}{figure.5.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.10}{\ignorespaces Load position tracking ($X/Y/Z$): reference vs network and optimizer.}}{55}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-load-tracking}{{5.10}{55}{DAgger}{figure.5.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.11}{\ignorespaces Load tracking error $\lVert \text  {load}-\text  {ref}\rVert $ over time: network vs optimizer.}}{55}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-load-error}{{5.11}{55}{DAgger}{figure.5.11}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.12}{\ignorespaces Carrier and load trajectories, top view ($X$-$Y$): network vs optimizer.}}{56}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-topview}{{5.12}{56}{DAgger}{figure.5.12}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.13}{\ignorespaces Carrier and load trajectories ($X$-$Y$-$Z$): network vs optimizer.}}{56}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-xyz}{{5.13}{56}{DAgger}{figure.5.13}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.14}{\ignorespaces Per-carrier position deviation of the network from the optimizer over time.}}{57}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-carrier-dev}{{5.14}{57}{DAgger}{figure.5.14}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.15}{\ignorespaces Carrier velocity norms: network vs optimizer, with the $\epsilon $ constraint floor.}}{57}{}\protected@file@percent }
+\newlabel{fig:f1-1trj-vnorms}{{5.15}{57}{DAgger}{figure.5.15}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.1}{\ignorespaces Performance of the DAgger-trained policy (network) on the single trajectory.}}{58}{}\protected@file@percent }
+\newlabel{tab:dagger-single-trajectory}{{5.1}{58}{DAgger}{table.5.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.2}Analysis of failure modes}{58}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.16}{\ignorespaces $\lambda $'s produced by the network versus the optimizer on a short-line trajectory: the network tracks the optimizer closely at first, then diverges as errors compound.}}{59}{}\protected@file@percent }
+\newlabel{fig:failure-short-line}{{5.16}{59}{Analysis of failure modes}{figure.5.16}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.17}{\ignorespaces $\lambda $'s produced by a policy trained with $\dot  p_R$ in the observation space, flown in closed loop: increasing high-frequency noise appears as the trajectory progresses.}}{59}{}\protected@file@percent }
+\newlabel{fig:failure-prdot-policy}{{5.17}{59}{Analysis of failure modes}{figure.5.17}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.18}{\ignorespaces $\lambda $'s produced by the same $\dot  p_R$ policy on a held-out trajectory: the same noise issue appears, showing it is not specific to a single trajectory.}}{60}{}\protected@file@percent }
+\newlabel{fig:failure-prdot-heldout}{{5.18}{60}{Analysis of failure modes}{figure.5.18}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1.3}Generalization}{60}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.1}Generalization across time}{60}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.19}{\ignorespaces Load position: reference vs.\ actual.}}{61}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-load-pos}{{5.19}{61}{Generalization across time}{figure.5.19}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.20}{\ignorespaces Load tracking error over time.}}{61}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-load-err}{{5.20}{61}{Generalization across time}{figure.5.20}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.21}{\ignorespaces $\lambda $ produced by the network vs.\ the optimizer.}}{62}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-lambda}{{5.21}{62}{Generalization across time}{figure.5.21}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.22}{\ignorespaces Carrier deviation from the optimizer.}}{62}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-carrier-dev}{{5.22}{62}{Generalization across time}{figure.5.22}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.23}{\ignorespaces Drone velocity norms (plant speed).}}{63}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-vnorms}{{5.23}{63}{Generalization across time}{figure.5.23}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.24}{\ignorespaces Drone XYZ trajectories: optimizer (solid) vs.\ net (dashed).}}{63}{}\protected@file@percent }
+\newlabel{fig:gen-time-long-xyz}{{5.24}{63}{Generalization across time}{figure.5.24}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.2}{\ignorespaces Performance of the network on the longer-time generalization trajectory.}}{64}{}\protected@file@percent }
+\newlabel{tab:gen-time-long}{{5.2}{64}{Generalization across time}{table.5.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.25}{\ignorespaces Load position: reference vs.\ actual.}}{64}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-load-pos}{{5.25}{64}{Generalization across time}{figure.5.25}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.26}{\ignorespaces Load tracking error over time.}}{65}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-load-err}{{5.26}{65}{Generalization across time}{figure.5.26}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.27}{\ignorespaces $\lambda $ produced by the network vs.\ the optimizer.}}{65}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-lambda}{{5.27}{65}{Generalization across time}{figure.5.27}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.28}{\ignorespaces Carrier deviation from the optimizer.}}{66}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-carrier-dev}{{5.28}{66}{Generalization across time}{figure.5.28}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.29}{\ignorespaces Drone velocity norms (plant speed).}}{66}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-vnorms}{{5.29}{66}{Generalization across time}{figure.5.29}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.30}{\ignorespaces Drone XYZ trajectories: optimizer (solid) vs.\ net (dashed).}}{67}{}\protected@file@percent }
+\newlabel{fig:gen-time-short-xyz}{{5.30}{67}{Generalization across time}{figure.5.30}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.3}{\ignorespaces Performance of the network on the shorter-time generalization trajectory.}}{67}{}\protected@file@percent }
+\newlabel{tab:gen-time-short}{{5.3}{67}{Generalization across time}{table.5.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.2}Generalization across distances}{67}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.31}{\ignorespaces Load position: reference vs.\ actual.}}{68}{}\protected@file@percent }
+\newlabel{fig:gen-mag-load-pos}{{5.31}{68}{Generalization across distances}{figure.5.31}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.32}{\ignorespaces Load tracking error over time.}}{68}{}\protected@file@percent }
+\newlabel{fig:gen-mag-load-err}{{5.32}{68}{Generalization across distances}{figure.5.32}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.33}{\ignorespaces $\lambda $ produced by the network vs.\ the optimizer.}}{69}{}\protected@file@percent }
+\newlabel{fig:gen-mag-lambda}{{5.33}{69}{Generalization across distances}{figure.5.33}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.34}{\ignorespaces Carrier deviation from the optimizer.}}{69}{}\protected@file@percent }
+\newlabel{fig:gen-mag-carrier-dev}{{5.34}{69}{Generalization across distances}{figure.5.34}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.35}{\ignorespaces Drone velocity norms (plant speed).}}{70}{}\protected@file@percent }
+\newlabel{fig:gen-mag-vnorms}{{5.35}{70}{Generalization across distances}{figure.5.35}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.36}{\ignorespaces Drone XYZ trajectories: optimizer (solid) vs.\ net (dashed).}}{70}{}\protected@file@percent }
+\newlabel{fig:gen-mag-xyz}{{5.36}{70}{Generalization across distances}{figure.5.36}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.37}{\ignorespaces Drone XYZ trajectories, second point of view: optimizer (solid) vs.\ net (dashed).}}{71}{}\protected@file@percent }
+\newlabel{fig:gen-mag-xyz-2ndpov}{{5.37}{71}{Generalization across distances}{figure.5.37}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.4}{\ignorespaces Performance of the network on the larger-magnitude generalization trajectory.}}{71}{}\protected@file@percent }
+\newlabel{tab:gen-mag}{{5.4}{71}{Generalization across distances}{table.5.4}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.1.3.3}Generalization across directions}{71}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5.38}{\ignorespaces Load position: reference vs.\ actual.}}{72}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-load-pos}{{5.38}{72}{Generalization across directions}{figure.5.38}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.39}{\ignorespaces Load tracking error over time.}}{72}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-load-err}{{5.39}{72}{Generalization across directions}{figure.5.39}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.40}{\ignorespaces Load orientation: reference vs.\ actual.}}{73}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-load-orient}{{5.40}{73}{Generalization across directions}{figure.5.40}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.41}{\ignorespaces $\lambda $ produced by the network vs.\ the optimizer.}}{73}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-lambda}{{5.41}{73}{Generalization across directions}{figure.5.41}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.42}{\ignorespaces Carrier deviation from the optimizer.}}{74}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-carrier-dev}{{5.42}{74}{Generalization across directions}{figure.5.42}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.43}{\ignorespaces Drone velocity norms (plant speed).}}{74}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-vnorms}{{5.43}{74}{Generalization across directions}{figure.5.43}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.44}{\ignorespaces Drone XYZ trajectories: optimizer (solid) vs.\ net (dashed).}}{74}{}\protected@file@percent }
+\newlabel{fig:gen-dir1-xyz}{{5.44}{74}{Generalization across directions}{figure.5.44}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.5}{\ignorespaces Performance of the network on generalization direction 1.}}{75}{}\protected@file@percent }
+\newlabel{tab:gen-dir1}{{5.5}{75}{Generalization across directions}{table.5.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.45}{\ignorespaces Load position: reference vs.\ actual.}}{75}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-load-pos}{{5.45}{75}{Generalization across directions}{figure.5.45}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.46}{\ignorespaces Load tracking error over time.}}{76}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-load-err}{{5.46}{76}{Generalization across directions}{figure.5.46}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.47}{\ignorespaces Load orientation: reference vs.\ actual.}}{76}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-load-orient}{{5.47}{76}{Generalization across directions}{figure.5.47}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.48}{\ignorespaces $\lambda $ produced by the network vs.\ the optimizer.}}{77}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-lambda}{{5.48}{77}{Generalization across directions}{figure.5.48}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.49}{\ignorespaces Carrier deviation from the optimizer.}}{77}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-carrier-dev}{{5.49}{77}{Generalization across directions}{figure.5.49}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.50}{\ignorespaces Drone velocity norms (plant speed).}}{78}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-vnorms}{{5.50}{78}{Generalization across directions}{figure.5.50}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5.51}{\ignorespaces Drone XYZ trajectories: optimizer (solid) vs.\ net (dashed).}}{78}{}\protected@file@percent }
+\newlabel{fig:gen-dir2-xyz}{{5.51}{78}{Generalization across directions}{figure.5.51}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.6}{\ignorespaces Performance of the network on generalization direction 2.}}{79}{}\protected@file@percent }
+\newlabel{tab:gen-dir2}{{5.6}{79}{Generalization across directions}{table.5.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5.7}{\ignorespaces Average network performance across all five generalization trajectories (longer-time, shorter-time, larger-magnitude, direction 1, direction 2).}}{79}{}\protected@file@percent }
+\newlabel{tab:gen-summary}{{5.7}{79}{Generalization across directions}{table.5.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5.2}Phase Two : Reinforcement Learning}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.1}Single trajectory}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.2}Analysis of failure modes}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2.3}Generalization}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.1}Generalization across time}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.2}Generalization across distances}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.3}Generalization across directions}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.4}History-Augmented Observation Space}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.5}Centralized Controller Policy Guidance experiment (using Supervised Learning)}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.2.3.6}Behavior Cloning (BC) of multiple policies}{80}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {chapter}{\numberline {6}Conclusion and Future Work}{81}{}\protected@file@percent }
 \@writefile{lof}{\addvspace {10\p@ }}
 \@writefile{lot}{\addvspace {10\p@ }}
-\@writefile{toc}{\contentsline {chapter}{References}{46}{}\protected@file@percent }
-\gdef \@abspage@last{47}
+\@writefile{toc}{\contentsline {chapter}{References}{82}{}\protected@file@percent }
+\gdef \@abspage@last{83}
